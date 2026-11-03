@@ -10,6 +10,7 @@ import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import * as Font from "expo-font";
 import "@/lib/_core/nativewind-pressable";
 import { ThemeProvider } from "@/lib/theme-provider";
+import { OpeningVideo } from "@/components/opening-video";
 import {
   SafeAreaFrameContext,
   SafeAreaInsetsContext,
@@ -91,6 +92,7 @@ export default function RootLayout() {
             <Stack.Screen name="oauth/callback" />
           </Stack>
           <StatusBar style="auto" />
+          <OpeningVideo />
         </QueryClientProvider>
     </GestureHandlerRootView>
   );
