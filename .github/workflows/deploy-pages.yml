@@ -30,7 +30,12 @@ jobs:
           EXPO_WEB_OUTPUT: single
           EXPO_BASE_URL: /${{ github.event.repository.name }}
           CI: "1"
-        run: npx expo export --platform web --output-dir dist-web
+        # NativeWind writes its CSS cache during the first bundle, so a fresh
+        # runner fails once ("Failed to get the SHA-1 ... web.css"). Retry clean.
+        run: |
+          npx expo export --platform web --output-dir dist-web || \
+          npx expo export --platform web --output-dir dist-web --clear
+          test -s dist-web/_expo/static/css/*.css
       - name: SPA fallback for deep links
         run: cp dist-web/index.html dist-web/404.html && touch dist-web/.nojekyll
       - uses: actions/upload-pages-artifact@v3
