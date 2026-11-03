@@ -1,3 +1,4 @@
+import Constants from "expo-constants";
 import * as Linking from "expo-linking";
 import { Platform } from "react-native";
 import * as WebBrowser from "expo-web-browser";
@@ -9,7 +10,9 @@ export const APP_SCHEME = "daralsila";
 /** Where Supabase sends the user back after the provider login. Add it to Supabase → Auth → URL Configuration → Redirect URLs. */
 export function getAppRedirectUri(): string {
   if (Platform.OS === "web" && typeof window !== "undefined") {
-    return `${window.location.origin}/oauth/callback`;
+    // The web build may live under a sub-path (GitHub Pages: /dar-al-sila-mobile).
+    const base = String((Constants.expoConfig?.experiments as { baseUrl?: string } | undefined)?.baseUrl ?? "").replace(/\/$/, "");
+    return `${window.location.origin}${base}/oauth/callback`;
   }
   return Linking.createURL("/oauth/callback", { scheme: APP_SCHEME });
 }
@@ -18,15 +21,14 @@ export function getAppRedirectUri(): string {
 export async function completeOAuthFromUrl(url: string): Promise<void> {
   const parsed = new URL(url.replace(`${APP_SCHEME}://`, "https://app.local/"));
   const errorDescription = parsed.searchParams.get("error_description") ?? parsed.searchParams.get("error");
-  if (errorDescription) throw new Error("تم إلغاء تسجيل الدخول أو رفضه.");
+  if (errorDescription) throw new Error(t("تم إلغاء تسجيل الدخول أو رفضه."));
+  // On web the client already exchanges ?code= on load (detectSessionInUrl); reuse that session.
+  const { data } = await supabase.auth.getSession();
+  if (data.session) return;
   const code = parsed.searchParams.get("code");
-  if (!code) {
-    const { data } = await supabase.auth.getSession();
-    if (data.session) return;
-    throw new Error("لم تصل جلسة دار السلع من خادم المصادقة.");
-  }
+  if (!code) throw new Error(t("لم تصل جلسة دار السلع من خادم المصادقة."));
   const { error } = await supabase.auth.exchangeCodeForSession(code);
-  if (error) throw new Error("تعذر إكمال تسجيل الدخول.");
+  if (error) throw new Error(t("تعذر إكمال تسجيل الدخول."));
 }
 
 async function startProviderLogin(provider: "facebook" | "google", cancelMessage: string): Promise<void> {
