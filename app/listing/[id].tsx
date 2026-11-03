@@ -1,58 +1,237 @@
-import { useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, Alert, Image, Linking, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { router, useLocalSearchParams } from "expo-router";
+import { useEffect, useState } from "react";
+import { Image, Linking, Platform, Pressable, ScrollView, Share, Text, View, useWindowDimensions } from "react-native";
+import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { ScreenContainer } from "@/components/screen-container";
-import { IconSymbol } from "@/components/ui/icon-symbol";
+import { Button, Card, EmptyState, FavoriteButton, ListingStrip, Loading, SectionHeader, StatusPill, notify } from "@/components/market/ui";
 import { useColors } from "@/hooks/use-colors";
 import { useAuth } from "@/hooks/use-auth";
-import { trpc } from "@/lib/trpc";
+import { CONDITIONS, fieldsForCategory } from "@/lib/category-fields";
+import { friendlyError, getListing, getRelatedListings, getSellerRating, listStores, rateListing, recordView, startConversation } from "@/lib/data";
+import { formatDate, formatNumber, isRTL, pickName, t, timeAgo } from "@/lib/i18n";
+import { useCategories, useLocations } from "@/lib/queries";
+import { createStyles } from "@/lib/i18n/rtl";
 
 export default function ListingDetailsScreen() {
-  const colors = useColors();
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { isAuthenticated } = useAuth();
-  const [liked, setLiked] = useState(false);
+  const colors = useColors();
+  const { width } = useWindowDimensions();
+  const { user, isAuthenticated } = useAuth();
+  const categories = useCategories();
+  const locations = useLocations();
   const [imageIndex, setImageIndex] = useState(0);
   const [rating, setRating] = useState(0);
-  const listingQuery = trpc.listings.get.useQuery({ publicId: id ?? "" }, { enabled: Boolean(id) });
-  const recordView = trpc.listings.recordView.useMutation();
-  const saveListing = trpc.listings.save.useMutation();
-  const unsaveListing = trpc.listings.unsave.useMutation();
-  const startChat = trpc.chats.start.useMutation({ onSuccess: (conversation) => router.push({ pathname: "/(tabs)/messages", params: { conversationPublicId: conversation.publicId } } as any) });
-  const rateListing = trpc.listings.rate.useMutation({ onSuccess: () => Alert.alert("تم التقييم", "شكرًا لمشاركتك تقييمك.") });
-  const listing = listingQuery.data;
-  const images = useMemo(() => listing?.images?.length ? listing.images : listing?.imageUrl ? [listing.imageUrl] : [], [listing?.images, listing?.imageUrl]);
-  const recordViewMutate = recordView.mutate;
-  const listingLoaded = Boolean(listing);
 
-  // Record one view per listing open (depending on the stable mutate fn avoids a re-render loop).
+  const listing = useQuery({ queryKey: ["listing", id], queryFn: () => getListing({ publicId: id! }), enabled: Boolean(id) });
+  const item = listing.data;
+  const related = useQuery({ queryKey: ["related", id], queryFn: () => getRelatedListings(item!), enabled: Boolean(item) });
+  const sellerRating = useQuery({ queryKey: ["seller-rating", item?.sellerId], queryFn: () => getSellerRating(item!.sellerId), enabled: Boolean(item) });
+  const sellerStore = useQuery({ queryKey: ["seller-store", item?.sellerId], queryFn: async () => (await listStores({ limit: 100 })).find((s) => s.ownerId === item!.sellerId) ?? null, enabled: Boolean(item) });
+
+  const isOwner = Boolean(user && item && user.id === item.sellerId);
+  const chat = useMutation({ mutationFn: startConversation, onSuccess: (conversationId) => router.push({ pathname: "/chat/[id]", params: { id: conversationId } }), onError: (e) => notify(t("تعذر بدء المحادثة"), friendlyError(e)) });
+  const rate = useMutation({ mutationFn: rateListing, onSuccess: () => { notify(t("تم التقييم"), t("شكرًا لمشاركتك تقييمك.")); void sellerRating.refetch(); }, onError: (e) => notify(t("تعذر التقييم"), friendlyError(e)) });
+
+  const loaded = Boolean(item);
   useEffect(() => {
-    if (listingLoaded && id && isAuthenticated) recordViewMutate({ publicId: id });
-  }, [id, isAuthenticated, listingLoaded, recordViewMutate]);
+    if (loaded && id && isAuthenticated && !isOwner) void recordView({ publicId: id });
+  }, [id, isAuthenticated, isOwner, loaded]);
 
-  const toggleSaved = () => {
-    if (!isAuthenticated) { Alert.alert("تسجيل الدخول مطلوب", "سجّل الدخول لحفظ الإعلانات في المفضلة."); return; }
-    if (liked) unsaveListing.mutate({ publicId: id ?? "" }); else saveListing.mutate({ publicId: id ?? "" });
-    setLiked((value) => !value);
+  if (listing.isLoading) return <ScreenContainer><Loading label={t("جارٍ تحميل الإعلان...")} /></ScreenContainer>;
+  if (listing.isError || !item) {
+    return <ScreenContainer className="px-4"><EmptyState icon="search-off" title={t("تعذر العثور على الإعلان")} text={t("ربما حُذف الإعلان أو انتهت صلاحيته.")} actionLabel={t("العودة")} onAction={() => (router.canGoBack() ? router.back() : router.replace("/(tabs)"))} /></ScreenContainer>;
+  }
+
+  const images = item.images.map((i) => i.url);
+  const topSlug = categories.topOf(item.categoryId)?.slug;
+  const fields = fieldsForCategory(topSlug).filter((f) => String(item.attributes[f.key] ?? "").trim());
+  const categoryPath = [categories.byId(item.categoryId), item.subcategoryId !== item.categoryId ? categories.byId(item.subcategoryId) : undefined].filter(Boolean).map((c) => pickName(c)).join(" › ");
+  const condition = CONDITIONS.find((c) => c.value === item.condition);
+
+  const share = async () => {
+    const url = Platform.OS === "web" && typeof window !== "undefined" ? window.location.href : `daralsila://listing/${item.id}`;
+    const message = `${item.title} — ${item.price}\n${url}`;
+    try {
+      if (Platform.OS === "web") {
+        if (typeof navigator !== "undefined" && navigator.share) await navigator.share({ title: item.title, url });
+        else { await navigator.clipboard.writeText(url); notify(t("تم نسخ الرابط")); }
+      } else await Share.share({ message });
+    } catch {
+      /* the user cancelled */
+    }
   };
 
   const call = () => {
-    if (!listing?.phone) {
-      Alert.alert("رقم الاتصال غير متاح", "لم يحدد المعلن رقم اتصال لهذا الإعلان.");
-      return;
-    }
-    Linking.openURL(`tel:${listing.phone}`).catch(() => Alert.alert("تعذر الاتصال", "تحقق من إعدادات الاتصال في جهازك."));
+    if (!item.phone) { notify(t("رقم الاتصال غير متاح"), t("لم يحدد المعلن رقم اتصال لهذا الإعلان.")); return; }
+    Linking.openURL(`tel:${item.phone.replace(/\s/g, "")}`).catch(() => notify(t("تعذر الاتصال"), item.phone!));
+  };
+  const whatsapp = () => {
+    const number = (item.whatsapp || item.phone || "").replace(/[^\d]/g, "");
+    if (!number) return;
+    const full = number.startsWith("968") ? number : `968${number}`;
+    Linking.openURL(`https://wa.me/${full}?text=${encodeURIComponent(`${t("مرحبًا، بخصوص إعلانك في دار السلع:")} ${item.title}`)}`).catch(() => undefined);
+  };
+  const contact = () => {
+    if (!isAuthenticated) { router.push("/login"); return; }
+    chat.mutate(item.id);
   };
 
-  if (listingQuery.isLoading) {
-    return <ScreenContainer edges={["top", "left", "right", "bottom"]}><View style={styles.center}><ActivityIndicator color={colors.primary} /><Text style={[styles.status, { color: colors.muted }]}>جارٍ تحميل الإعلان...</Text></View></ScreenContainer>;
-  }
+  return (
+    <ScreenContainer edges={["top", "left", "right", "bottom"]}>
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.content}>
+        <View style={styles.topBar}>
+          <Pressable accessibilityLabel={t("رجوع")} onPress={() => (router.canGoBack() ? router.back() : router.replace("/(tabs)"))} style={[styles.circle, { backgroundColor: colors.surface }]}>
+            <MaterialIcons name={isRTL() ? "arrow-forward" : "arrow-back"} size={22} color={colors.foreground} />
+          </Pressable>
+          <View style={styles.topActions}>
+            <Pressable accessibilityLabel={t("مشاركة")} onPress={share} style={[styles.circle, { backgroundColor: colors.surface }]}><MaterialIcons name="share" size={20} color={colors.foreground} /></Pressable>
+            <FavoriteButton listingId={item.id} size={22} />
+          </View>
+        </View>
 
-  if (listingQuery.isError || !listing) {
-    return <ScreenContainer edges={["top", "left", "right", "bottom"]}><View style={styles.center}><Text style={[styles.status, { color: colors.error }]}>تعذر العثور على الإعلان.</Text><Pressable onPress={() => router.back()} style={[styles.retry, { borderColor: colors.primary }]}><Text style={[styles.retryText, { color: colors.primary }]}>العودة</Text></Pressable></View></ScreenContainer>;
-  }
+        <View style={[styles.gallery, { backgroundColor: colors.surfaceAlt }]}>
+          {images.length ? (
+            <ScrollView horizontal pagingEnabled showsHorizontalScrollIndicator={false} onMomentumScrollEnd={(e) => setImageIndex(Math.round(e.nativeEvent.contentOffset.x / width))}>
+              {images.map((uri) => <Image key={uri} source={{ uri }} style={[styles.galleryImage, { width }]} resizeMode="cover" />)}
+            </ScrollView>
+          ) : <View style={styles.noImage}><MaterialIcons name="photo-camera" size={44} color={colors.muted} /><Text style={{ color: colors.muted }}>{t("بدون صور")}</Text></View>}
+          {images.length > 1 ? <View style={styles.dots}>{images.map((uri, index) => <View key={uri} style={[styles.dot, { backgroundColor: index === imageIndex ? colors.accent : "#FFFFFF99" }]} />)}</View> : null}
+        </View>
 
-  return <ScreenContainer edges={["top", "left", "right", "bottom"]}><ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.content}><View style={styles.topBar}><Pressable onPress={() => router.back()} style={[styles.circle, { backgroundColor: colors.surface }]}><IconSymbol name="chevron.right" size={22} color={colors.foreground} /></Pressable><View style={styles.topActions}><Pressable onPress={toggleSaved} style={[styles.circle, { backgroundColor: colors.surface }]}><IconSymbol name={liked ? "heart.fill" : "heart"} size={22} color={liked ? colors.primary : colors.foreground} /></Pressable><Pressable onPress={() => Alert.alert("مشاركة", "استخدم خيارات المشاركة في جهازك لمشاركة الإعلان.")} style={[styles.circle, { backgroundColor: colors.surface }]}><IconSymbol name="square.and.arrow.up" size={21} color={colors.foreground} /></Pressable></View></View><View style={[styles.gallery, { backgroundColor: colors.surface }]}>{images.length > 0 ? <Image source={{ uri: images[imageIndex] }} style={styles.mainImage} /> : <View style={styles.noImage}><IconSymbol name="photo" size={48} color={colors.muted} /><Text style={[styles.status, { color: colors.muted }]}>لا توجد صورة</Text></View>}<View style={styles.galleryActions}><Text style={styles.photoCount}>{images.length ? `${imageIndex + 1} / ${images.length}` : "بدون صور"}</Text>{images.length > 1 && <View style={styles.dots}>{images.map((image, index) => <Pressable key={image} onPress={() => setImageIndex(index)} style={[styles.dot, { backgroundColor: index === imageIndex ? colors.primary : "#FFFFFF99" }]} />)}</View>}</View></View>{images.length > 0 && <View style={styles.thumbs}>{images.map((image, index) => <Pressable key={image} onPress={() => setImageIndex(index)} style={[styles.thumb, index === imageIndex && { borderColor: colors.primary }]}><Image source={{ uri: image }} style={styles.thumbImage} /></Pressable>)}</View>}<View style={styles.body}><Text style={[styles.title, { color: colors.foreground }]}>{listing.title}</Text><Text style={[styles.price, { color: colors.primary }]}>{listing.price}</Text><View style={styles.meta}><IconSymbol name="location.fill" size={16} color={colors.primary} /><Text style={[styles.metaText, { color: colors.muted }]}>{listing.location} • منشور</Text></View><View style={[styles.divider, { backgroundColor: colors.border }]} /><Text style={[styles.sectionTitle, { color: colors.foreground }]}>الوصف</Text><Text style={[styles.description, { color: colors.muted }]}>{listing.description || "لا يوجد وصف إضافي."}</Text><Pressable onPress={() => router.push({ pathname: "/report", params: { listingPublicId: id ?? "" } } as never)} style={[styles.reportButton, { borderColor: colors.border }]}><IconSymbol name="exclamationmark.triangle" size={17} color={colors.primary} /><Text style={[styles.reportButtonText, { color: colors.primary }]}>الإبلاغ عن هذا الإعلان</Text></Pressable><View style={[styles.ratingCard, { backgroundColor: colors.surface, borderColor: colors.border }]}><Text style={[styles.ratingTitle, { color: colors.foreground }]}>كيف كانت تجربتك مع الإعلان؟</Text><View style={styles.ratingRow}>{[1, 2, 3, 4, 5].map((value) => <Pressable key={value} onPress={() => setRating(value)}><IconSymbol name={value <= rating ? "star.fill" : "star"} size={25} color={value <= rating ? colors.warning : colors.muted} /></Pressable>)}</View><Pressable disabled={!rating || !isAuthenticated || rateListing.isPending} onPress={() => rateListing.mutate({ publicId: id ?? "", rating })} style={[styles.rateButton, { backgroundColor: rating ? colors.primary : colors.border }]}><Text style={styles.rateText}>{isAuthenticated ? "إرسال التقييم" : "سجّل الدخول للتقييم"}</Text></Pressable></View><View style={[styles.sellerCard, { backgroundColor: colors.surface, borderColor: colors.border }]}><View style={[styles.sellerAvatar, { backgroundColor: colors.primary }]}><Text style={styles.sellerLetter}>{listing.sellerName.charAt(0)}</Text></View><View style={styles.sellerCopy}><Text style={[styles.sellerName, { color: colors.foreground }]}>{listing.sellerName}</Text><Text style={[styles.sellerHint, { color: colors.muted }]}>معلن على دار السلع</Text></View><IconSymbol name="checkmark.seal.fill" size={23} color={colors.primary} /></View></View></ScrollView><View style={[styles.bottomBar, { backgroundColor: colors.background, borderTopColor: colors.border }]}><Pressable onPress={() => { if (!isAuthenticated) Alert.alert("تسجيل الدخول مطلوب", "سجّل الدخول لمراسلة المعلن."); else startChat.mutate({ listingPublicId: id ?? "" }); }} style={[styles.messageButton, { borderColor: colors.primary }]}><IconSymbol name="bubble.left.and.bubble.right.fill" size={19} color={colors.primary} /><Text style={[styles.messageText, { color: colors.primary }]}>رسالة</Text></Pressable><Pressable onPress={call} style={[styles.callButton, { backgroundColor: colors.primary }]}><IconSymbol name="phone.fill" size={20} color="#FFFFFF" /><Text style={styles.callText}>اتصال بالمعلن</Text></Pressable></View></ScreenContainer>;
+        <View style={styles.body}>
+          <View style={styles.titleRow}>
+            <Text style={[styles.title, { color: colors.foreground }]}>{item.title}</Text>
+            {item.status !== "active" ? <StatusPill status={item.status} /> : null}
+          </View>
+          <Text style={[styles.price, { color: colors.primary }]}>{item.price}</Text>
+          {item.isFeatured ? <View style={[styles.featured, { backgroundColor: colors.accentSoft }]}><MaterialIcons name="star" size={14} color={colors.accent} /><Text style={[styles.featuredText, { color: colors.foreground }]}>{t("إعلان مميز")}</Text></View> : null}
+
+          <View style={styles.metaGrid}>
+            {categoryPath ? <Meta icon="category" text={categoryPath} /> : null}
+            <Meta icon="location-on" text={locations.label(item.locationId) ?? t("عُمان")} />
+            <Meta icon="schedule" text={`${timeAgo(item.createdAt)} · ${formatDate(item.createdAt)}`} />
+            {condition ? <Meta icon="verified" text={t(condition.label)} /> : null}
+            <Meta icon="visibility" text={t("{n} مشاهدة", { n: formatNumber(item.views) })} />
+          </View>
+
+          {isOwner && item.moderationReason && (item.status === "rejected" || item.status === "pending") ? (
+            <Card style={{ borderColor: colors.error, marginTop: 14 }}><Text style={[styles.reasonTitle, { color: colors.error }]}>{t("ملاحظة المشرف")}</Text><Text style={[styles.reasonText, { color: colors.foreground }]}>{item.moderationReason}</Text></Card>
+          ) : null}
+
+          {fields.length ? (
+            <>
+              <SectionHeader title={t("التفاصيل")} />
+              <Card>
+                {fields.map((field, index) => {
+                  const raw = String(item.attributes[field.key]);
+                  const option = field.options?.find((o) => o.value === raw);
+                  const value = option ? t(option.label) : field.type === "number" ? `${formatNumber(Number(raw))}${field.unit ? ` ${t(field.unit)}` : ""}` : raw;
+                  return (
+                    <View key={field.key} style={[styles.detailRow, index < fields.length - 1 && { borderBottomColor: colors.border, borderBottomWidth: 1 }]}>
+                      <Text style={[styles.detailLabel, { color: colors.muted }]}>{t(field.label)}</Text>
+                      <Text style={[styles.detailValue, { color: colors.foreground }]}>{value}</Text>
+                    </View>
+                  );
+                })}
+              </Card>
+            </>
+          ) : null}
+
+          <SectionHeader title={t("الوصف")} />
+          <Text style={[styles.description, { color: colors.foreground }]}>{item.description || t("لا يوجد وصف.")}</Text>
+
+          <SectionHeader title={t("البائع")} />
+          <Card>
+            <View style={styles.sellerRow}>
+              {item.sellerAvatar ? <Image source={{ uri: item.sellerAvatar }} style={styles.avatar} /> : <View style={[styles.avatar, styles.avatarEmpty, { backgroundColor: colors.accentSoft }]}><MaterialIcons name="person" size={26} color={colors.primary} /></View>}
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.sellerName, { color: colors.foreground }]}>{item.sellerName}</Text>
+                {item.sellerSince ? <Text style={[styles.sellerMeta, { color: colors.muted }]}>{t("عضو منذ {date}", { date: formatDate(item.sellerSince, { month: "long", year: "numeric" }) })}</Text> : null}
+                {sellerRating.data?.count ? <Text style={[styles.sellerMeta, { color: colors.muted }]}>★ {formatNumber(sellerRating.data.average, { maximumFractionDigits: 1 })} · {t("{n} تقييم", { n: sellerRating.data.count })}</Text> : null}
+              </View>
+            </View>
+            <View style={styles.sellerLinks}>
+              {sellerStore.data ? <Button small variant="outline" icon="storefront" label={t("زيارة المتجر")} onPress={() => router.push({ pathname: "/store/[merchantId]", params: { merchantId: item.sellerId } })} style={{ flex: 1 }} /> : null}
+              <Button small variant="ghost" icon="list" label={t("إعلانات البائع")} onPress={() => router.push({ pathname: "/seller/[id]", params: { id: item.sellerId } })} style={{ flex: 1 }} />
+            </View>
+          </Card>
+
+          {isAuthenticated && !isOwner ? (
+            <Card style={{ marginTop: 14 }}>
+              <Text style={[styles.reasonTitle, { color: colors.foreground }]}>{t("قيّم تجربتك مع البائع")}</Text>
+              <View style={styles.stars}>{[1, 2, 3, 4, 5].map((value) => <Pressable key={value} hitSlop={6} onPress={() => setRating(value)}><MaterialIcons name={value <= rating ? "star" : "star-border"} size={30} color={colors.accent} /></Pressable>)}</View>
+              <Button small label={t("إرسال التقييم")} disabled={!rating} loading={rate.isPending} onPress={() => rate.mutate({ publicId: item.id, rating })} />
+            </Card>
+          ) : null}
+
+          {!isOwner ? (
+            <Pressable onPress={() => (isAuthenticated ? router.push({ pathname: "/report", params: { listingId: item.id, userId: item.sellerId } }) : router.push("/login"))} style={styles.reportLink}>
+              <MaterialIcons name="flag" size={17} color={colors.error} />
+              <Text style={[styles.reportText, { color: colors.error }]}>{t("الإبلاغ عن هذا الإعلان")}</Text>
+            </Pressable>
+          ) : null}
+
+          {(related.data?.length ?? 0) > 0 ? (<><SectionHeader title={t("إعلانات مشابهة")} /><ListingStrip items={related.data!} /></>) : null}
+        </View>
+      </ScrollView>
+
+      <View style={[styles.actionBar, { backgroundColor: colors.surface, borderTopColor: colors.border }]}>
+        {isOwner ? (
+          <>
+            <Button icon="edit" label={t("تعديل الإعلان")} onPress={() => router.push({ pathname: "/(tabs)/post", params: { listingId: item.id } })} style={{ flex: 1 }} />
+            <Button variant="outline" icon="list-alt" label={t("إعلاناتي")} onPress={() => router.push("/(tabs)/myads")} style={{ flex: 1 }} />
+          </>
+        ) : (
+          <>
+            <Button icon="chat" label={t("مراسلة")} loading={chat.isPending} onPress={contact} style={{ flex: 1.2 }} />
+            {item.phone ? <Button variant="outline" icon="call" label={t("اتصال")} onPress={call} style={{ flex: 1 }} /> : null}
+            {item.whatsapp || item.phone ? <Button variant="accent" icon="chat-bubble" label={t("واتساب")} onPress={whatsapp} style={{ flex: 1 }} /> : null}
+          </>
+        )}
+      </View>
+    </ScreenContainer>
+  );
 }
 
-const styles = StyleSheet.create({ center: { alignItems: "center", flex: 1, gap: 12, justifyContent: "center", padding: 20 }, status: { fontSize: 14, textAlign: "center" }, retry: { borderRadius: 12, borderWidth: 1, marginTop: 8, paddingHorizontal: 24, paddingVertical: 11 }, retryText: { fontSize: 14, fontWeight: "800" }, content: { paddingBottom: 105 }, topBar: { alignItems: "center", flexDirection: "row", justifyContent: "space-between", paddingHorizontal: 14, paddingTop: 10 }, topActions: { flexDirection: "row", gap: 10 }, circle: { alignItems: "center", borderRadius: 21, height: 42, justifyContent: "center", width: 42 }, gallery: { height: 310, marginTop: 14, overflow: "hidden", position: "relative" }, mainImage: { height: "100%", width: "100%" }, noImage: { alignItems: "center", flex: 1, gap: 8, justifyContent: "center" }, galleryActions: { alignItems: "center", bottom: 14, flexDirection: "row", justifyContent: "space-between", left: 15, position: "absolute", right: 15 }, photoCount: { backgroundColor: "#101512BB", borderRadius: 10, color: "#FFFFFF", fontSize: 11, paddingHorizontal: 8, paddingVertical: 5 }, dots: { flexDirection: "row", gap: 5 }, dot: { borderRadius: 5, height: 8, width: 8 }, thumbs: { flexDirection: "row-reverse", gap: 8, paddingHorizontal: 14, paddingTop: 12 }, thumb: { borderRadius: 10, borderWidth: 2, borderColor: "transparent", height: 58, overflow: "hidden", width: 72 }, thumbImage: { height: "100%", width: "100%" }, body: { paddingHorizontal: 16 }, title: { fontSize: 21, fontWeight: "900", lineHeight: 29, marginTop: 20, textAlign: "right" }, price: { fontSize: 21, fontWeight: "900", marginTop: 9, textAlign: "right" }, meta: { alignItems: "center", flexDirection: "row-reverse", gap: 5, marginTop: 11 }, metaText: { fontSize: 12 }, divider: { height: 1, marginVertical: 19 }, sectionTitle: { fontSize: 18, fontWeight: "900", textAlign: "right" }, description: { fontSize: 14, lineHeight: 23, marginTop: 8, textAlign: "right" }, ratingCard: { borderRadius: 16, borderWidth: 1, marginTop: 18, padding: 14 }, ratingTitle: { fontSize: 15, fontWeight: "900", textAlign: "right" }, ratingRow: { flexDirection: "row", gap: 7, justifyContent: "flex-end", marginTop: 12 }, rateButton: { alignItems: "center", borderRadius: 11, marginTop: 12, paddingVertical: 10 }, rateText: { color: "#FFFFFF", fontSize: 12, fontWeight: "900" }, reportButton: { alignItems: "center", borderRadius: 12, borderWidth: 1, flexDirection: "row-reverse", gap: 7, justifyContent: "center", marginTop: 15, paddingVertical: 11 }, reportButtonText: { fontSize: 12, fontWeight: "900" }, sellerCard: { alignItems: "center", borderRadius: 16, borderWidth: 1, flexDirection: "row-reverse", marginTop: 21, padding: 12 }, sellerAvatar: { alignItems: "center", borderRadius: 25, height: 48, justifyContent: "center", width: 48 }, sellerLetter: { color: "#FFFFFF", fontSize: 19, fontWeight: "900" }, sellerCopy: { flex: 1, marginHorizontal: 10 }, sellerName: { fontSize: 14, fontWeight: "900", textAlign: "right" }, sellerHint: { fontSize: 11, marginTop: 4, textAlign: "right" }, bottomBar: { alignItems: "center", borderTopWidth: 1, bottom: 0, flexDirection: "row-reverse", gap: 10, left: 0, padding: 12, position: "absolute", right: 0 }, messageButton: { alignItems: "center", borderRadius: 13, borderWidth: 1, flex: 0.9, flexDirection: "row-reverse", gap: 6, justifyContent: "center", minHeight: 50 }, messageText: { fontSize: 14, fontWeight: "900" }, callButton: { alignItems: "center", borderRadius: 13, flex: 1.35, flexDirection: "row-reverse", gap: 7, justifyContent: "center", minHeight: 50 }, callText: { color: "#FFFFFF", fontSize: 14, fontWeight: "900" } });
+function Meta({ icon, text }: { icon: keyof typeof MaterialIcons.glyphMap; text: string }) {
+  const colors = useColors();
+  return <View style={styles.meta}><MaterialIcons name={icon} size={16} color={colors.muted} /><Text style={[styles.metaText, { color: colors.muted }]}>{text}</Text></View>;
+}
+
+const styles = createStyles({
+  content: { paddingBottom: 110 },
+  topBar: { flexDirection: "row-reverse", justifyContent: "space-between", left: 14, position: "absolute", right: 14, top: 10, zIndex: 3 },
+  topActions: { flexDirection: "row-reverse", gap: 8 },
+  circle: { alignItems: "center", borderRadius: 20, height: 40, justifyContent: "center", width: 40 },
+  gallery: { height: 320 },
+  galleryImage: { height: 320 },
+  noImage: { alignItems: "center", flex: 1, gap: 8, justifyContent: "center" },
+  dots: { bottom: 12, flexDirection: "row", gap: 6, justifyContent: "center", left: 0, position: "absolute", right: 0 },
+  dot: { borderRadius: 4, height: 8, width: 8 },
+  body: { paddingHorizontal: 16, paddingTop: 16 },
+  titleRow: { alignItems: "flex-start", flexDirection: "row-reverse", gap: 10 },
+  title: { flex: 1, fontSize: 22, fontWeight: "900", lineHeight: 31, textAlign: "right" },
+  price: { fontSize: 22, fontWeight: "900", marginTop: 8, textAlign: "right" },
+  featured: { alignItems: "center", alignSelf: "flex-end", borderRadius: 10, flexDirection: "row-reverse", gap: 4, marginTop: 8, paddingHorizontal: 9, paddingVertical: 4 },
+  featuredText: { fontSize: 11, fontWeight: "900" },
+  metaGrid: { gap: 8, marginTop: 14 },
+  meta: { alignItems: "center", flexDirection: "row-reverse", gap: 6 },
+  metaText: { flex: 1, fontSize: 13, textAlign: "right" },
+  reasonTitle: { fontSize: 14, fontWeight: "900", textAlign: "right" },
+  reasonText: { fontSize: 13, lineHeight: 20, marginTop: 6, textAlign: "right" },
+  detailRow: { flexDirection: "row-reverse", justifyContent: "space-between", paddingVertical: 10 },
+  detailLabel: { fontSize: 13, textAlign: "right" },
+  detailValue: { fontSize: 13, fontWeight: "800", textAlign: "left" },
+  description: { fontSize: 15, lineHeight: 25, textAlign: "right" },
+  sellerRow: { alignItems: "center", flexDirection: "row-reverse", gap: 12 },
+  avatar: { borderRadius: 26, height: 52, width: 52 },
+  avatarEmpty: { alignItems: "center", justifyContent: "center" },
+  sellerName: { fontSize: 16, fontWeight: "900", textAlign: "right" },
+  sellerMeta: { fontSize: 12, marginTop: 3, textAlign: "right" },
+  sellerLinks: { flexDirection: "row-reverse", gap: 8, marginTop: 12 },
+  stars: { flexDirection: "row-reverse", gap: 4, justifyContent: "center", marginVertical: 10 },
+  reportLink: { alignItems: "center", alignSelf: "flex-end", flexDirection: "row-reverse", gap: 6, marginTop: 18 },
+  reportText: { fontSize: 13, fontWeight: "800" },
+  actionBar: { borderTopWidth: 1, bottom: 0, flexDirection: "row-reverse", gap: 8, left: 0, padding: 12, position: "absolute", right: 0 },
+});

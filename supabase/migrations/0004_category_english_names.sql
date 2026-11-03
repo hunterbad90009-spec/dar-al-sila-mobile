@@ -1,0 +1,42 @@
+-- English names for active categories whose `name` column held Arabic text.
+-- Data-only change: name_ar (Arabic) is untouched. Applied to TEST on 2026-11-03.
+update public.categories c set name = v.en
+from (values
+  (1,'Cars & Vehicles'),(2,'Real Estate'),(3,'Electronics & Home Appliances'),(4,'Jobs'),(5,'Services'),
+  (6,'Home, Garden & Kitchen'),(7,'Fashion & Kids'),(11,'Sports, Hobbies & Arts'),(12,'Pets & Supplies'),(15,'Business Equipment (B2B)'),
+  (141,'Mobiles & Tablets'),(142,'Computers & Laptops'),(143,'Video Games'),(144,'Digital Services'),(145,'Parts & Supplies'),
+  (146,'Marine & Recreational Vehicles'),(147,'Motorcycles & Machinery'),(148,'Cars'),(149,'Holiday Properties'),(150,'Property for Rent'),
+  (151,'Property for Sale'),(152,'Accessories & Telecom'),(153,'Wearables'),(154,'Tablets'),(155,'Smartphones'),
+  (156,'Large Appliances'),(157,'Cameras & Photography'),(158,'TV & Audio'),(159,'Components & Networking'),(160,'Monitors & Accessories'),
+  (161,'Computers'),(162,'Gaming Accessories'),(163,'Games & Digital Content'),(164,'Gaming Consoles'),(165,'Outdoor Decor & Furniture'),
+  (166,'Kitchenware & Decor'),(167,'Indoor Furniture'),(168,'Job Seekers'),(169,'Vacancies'),(170,'Personal & Business Services'),
+  (171,'Maintenance & Construction'),(172,'Baby & Kids Supplies'),(173,'Beauty & Makeup'),(174,'Men''s & Women''s Fashion'),(175,'Supplies'),
+  (176,'Animals'),(177,'Hobbies & Arts'),(178,'Sports & Outdoors'),(179,'Industry & Manufacturing'),(180,'Commercial Equipment'),
+  (181,'Cars for Sale'),(182,'Cars for Rent'),(183,'Cars on Installments'),(184,'Damaged Cars & Scrap'),(185,'Motorcycles'),
+  (186,'Trucks & Heavy Equipment'),(187,'Buses & Commercial Vans'),(188,'Boats & Jet Skis'),(189,'Caravans & Mobile Homes'),(190,'Car Parts'),
+  (191,'Car Accessories'),(192,'Tyres & Rims'),(193,'Oils, Filters & Batteries'),(194,'Special Number Plates'),(195,'Apartments for Sale'),
+  (196,'Villas & Houses'),(197,'Residential Land'),(198,'Commercial Land'),(199,'Agricultural Land'),(200,'Buildings & Towers'),
+  (201,'Offices & Shops for Sale'),(202,'Apartments for Rent'),(203,'Villas & Houses for Rent'),(204,'Rooms & Shared Housing'),(205,'Offices, Shops & Warehouses'),
+  (206,'Chalets, Farms & Rest Houses'),(207,'Furnished Apartments'),(215,'Other Brands'),(218,'Other Tablets'),(219,'Smartwatches'),
+  (220,'VR Headsets'),(221,'Chargers & Cables'),(222,'AirPods & Bluetooth Headphones'),(223,'Cases & Screen Protectors'),(224,'Special Numbers & SIMs'),
+  (225,'Screens & TVs'),(226,'Receivers & Satellite'),(227,'Speakers, Home Theatre & Amplifiers'),(228,'Professional Cameras'),(229,'Camera Lenses'),
+  (230,'Studio & Lighting Equipment'),(231,'Drones'),(232,'Fridges & Freezers'),(233,'Washers & Dryers'),(234,'ACs, Fans & Heaters'),
+  (235,'Dishwashers'),(236,'Laptops'),(237,'Desktop PCs'),(238,'Gaming PCs'),(239,'Computer Monitors'),
+  (240,'Printers & Scanners'),(241,'Mice, Keyboards & Headsets'),(242,'Graphics Cards'),(243,'Processors'),(244,'Hard Drives & RAM'),
+  (245,'Routers, Boosters & Network Gear'),(249,'Game Discs & Cartridges'),(250,'Gaming Accounts'),(251,'Digital Gift Cards'),(252,'Controllers'),
+  (253,'Gaming Chairs & Desks'),(254,'Surround Headsets'),(255,'Living Room & Majlis Furniture'),(256,'Bedrooms & Beds'),(257,'Dining Tables & Rooms'),
+  (258,'Carpets, Rugs & Curtains'),(259,'Kitchen Sets'),(260,'Kitchen & Dining Tools'),(261,'Small Kitchen Appliances'),(262,'Decor, Lighting & Chandeliers'),
+  (263,'Garden Furniture & Umbrellas'),(264,'Plants & Gardening'),(265,'Engineering'),(266,'Medical & Nursing'),(267,'Sales & Marketing'),
+  (268,'Accounting & Finance'),(269,'IT & Programming'),(270,'Education & Teaching'),(271,'Skilled Trades'),(272,'Drivers & Delivery'),
+  (273,'Security & Guarding'),(274,'CVs of Job Seekers'),(275,'Home Maintenance'),(276,'Contracting, Building & Decor'),(277,'Cleaning & Pest Control'),
+  (278,'Furniture Moving'),(279,'Private Tutoring'),(280,'Travel, Hajj & Umrah'),(281,'Medical & Healthcare Services'),(282,'Clearance & Legal Advice'),
+  (283,'Events & Parties'),(284,'Clothing'),(285,'Shoes'),(286,'Watches & Glasses'),(287,'Bags & Accessories'),
+  (288,'Jewellery & Gold'),(289,'Perfumes'),(290,'Beauty Tools & Makeup'),(291,'Shavers & Hair Dryers'),(292,'Health Supplements'),
+  (293,'Kids'' Clothing'),(294,'Toys'),(295,'Strollers & Car Seats'),(296,'Kids'' & Baby Furniture'),(297,'Cats'),
+  (298,'Dogs'),(299,'Birds & Parrots'),(300,'Aquarium Fish'),(301,'Horses & Livestock'),(302,'Other Pets'),
+  (303,'Pet Food'),(304,'Cages & Pet Houses'),(305,'Pet Care & Medicine'),(306,'Home Gym Equipment'),(307,'Camping, Trips & Fishing'),
+  (308,'Bicycles'),(309,'Musical Instruments'),(310,'Books & Magazines'),(311,'Antiques & Collectibles'),(312,'Paintings & Fine Art'),
+  (313,'Restaurant & Café Equipment'),(314,'Office Furniture & Supplies'),(315,'Salon & Laundry Equipment'),(316,'Industrial & Factory Equipment'),(317,'Building Materials'),
+  (318,'Scrap & Metals')
+) as v(id, en)
+where c.id = v.id;

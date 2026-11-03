@@ -1,38 +1,89 @@
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { router } from "expo-router";
-
+import { useState } from "react";
+import { Linking, Pressable, ScrollView, Text, View } from "react-native";
+import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { ScreenContainer } from "@/components/screen-container";
-import { IconSymbol } from "@/components/ui/icon-symbol";
+import { Button, Card, Header, SectionHeader, notify } from "@/components/market/ui";
 import { useColors } from "@/hooks/use-colors";
+import { FAQ, PAGES, SUPPORT_EMAIL, pick } from "@/lib/content";
+import { isRTL, t } from "@/lib/i18n";
+import { createStyles } from "@/lib/i18n/rtl";
 
-const cards = [
-  { title: "المعلومات القانونية والخصوصية", detail: "اطّلع على سياسة الخصوصية وشروط استخدام دار السلع.", icon: "lock.shield.fill" as const, route: "/privacy-policy" },
-  { title: "الخدمات المدفوعة", detail: "تعرّف على خيارات تمييز الإعلان والخدمات الداخلية.", icon: "star.fill" as const, route: "/services" },
-  { title: "الاحتيال والبلاغات", detail: "كيف تتعرف على الإعلان المشبوه، وكيف ترفع بلاغًا.", icon: "exclamationmark.triangle.fill" as const, route: "/safety" },
-  { title: "شروط الاستخدام", detail: "القواعد التي تنظّم البيع والشراء والتواصل داخل المنصة.", icon: "doc.text.fill" as const, route: "/terms" },
+type IconName = keyof typeof MaterialIcons.glyphMap;
+const LINKS: { key: string; icon: IconName }[] = [
+  { key: "safety", icon: "shield" },
+  { key: "seller-guidelines", icon: "sell" },
+  { key: "buyer-guidelines", icon: "shopping-cart" },
+  { key: "prohibited-items", icon: "block" },
+  { key: "terms", icon: "description" },
+  { key: "privacy-policy", icon: "lock" },
 ];
 
+/** Help center (spec 4.14): FAQ, guidelines, policies, contact support, report a problem. */
 export default function HelpCenterScreen() {
   const colors = useColors();
+  const [open, setOpen] = useState<number | null>(0);
+
+  const email = () => {
+    Linking.openURL(`mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent(t("مساعدة دار السلع"))}`).catch(() => notify(t("راسلنا على"), SUPPORT_EMAIL));
+  };
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(SUPPORT_EMAIL); notify(t("تم نسخ البريد")); } catch { notify(t("راسلنا على"), SUPPORT_EMAIL); }
+  };
+
   return (
-    <ScreenContainer edges={["top", "left", "right", "bottom"]} className="px-4">
+    <ScreenContainer className="px-4">
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.content}>
-        <View style={styles.header}>
-          <Pressable onPress={() => router.back()} style={[styles.back, { backgroundColor: colors.surface }]}><IconSymbol name="chevron.right" size={22} color={colors.foreground} /></Pressable>
-          <View style={styles.heading}><Text style={[styles.title, { color: colors.foreground }]}>مركز المساعدة</Text><Text style={[styles.subtitle, { color: colors.muted }]}>إجابات واضحة ومساندة آمنة لمستخدمي دار السلع</Text></View>
-        </View>
-        <View style={[styles.banner, { backgroundColor: colors.primary }]}><IconSymbol name="checkmark.shield.fill" size={31} color="#FFFFFF" /><View style={styles.bannerCopy}><Text style={styles.bannerTitle}>تسوق وتواصل بأمان</Text><Text style={styles.bannerText}>لا ترسل بيانات الدفع أو رموز التحقق لأي شخص، وتحقق من السلعة قبل الدفع.</Text></View></View>
-        <Text style={[styles.sectionTitle, { color: colors.foreground }]}>كيف يمكننا مساعدتك؟</Text>
-        <View style={styles.grid}>{cards.map((card) => <Pressable key={card.title} onPress={() => router.push(card.route as never)} style={({ pressed }) => [styles.card, { backgroundColor: colors.surface, borderColor: colors.border }, pressed && { opacity: 0.72 }]}><View style={[styles.iconBox, { backgroundColor: `${colors.primary}18` }]}><IconSymbol name={card.icon} size={23} color={colors.primary} /></View><Text style={[styles.cardTitle, { color: colors.foreground }]}>{card.title}</Text><Text style={[styles.cardDetail, { color: colors.muted }]}>{card.detail}</Text><Text style={[styles.open, { color: colors.primary }]}>فتح القسم ←</Text></Pressable>)}</View>
-        <Text style={[styles.sectionTitle, { color: colors.foreground }]}>أسئلة سريعة</Text>
-        <View style={[styles.faq, { backgroundColor: colors.surface, borderColor: colors.border }]}>{[
-          ["كيف أبلغ عن إعلان؟", "افتح تفاصيل الإعلان وتواصل مع الدعم، واذكر رقم الإعلان وسبب البلاغ."],
-          ["هل أستطيع عرض سلعة دون اشتراك؟", "نعم، يستطيع المستخدم العادي نشر إعلان عادي. الاشتراك يضيف مزايا المتجر وفق الباقة."],
-          ["متى يظهر إعلاني؟", "بعد اكتمال الفحص الآلي، قد يُرسل الإعلان إلى مراجعة المشرف قبل ظهوره للعامة."],
-        ].map(([question, answer]) => <View key={question} style={[styles.faqRow, { borderBottomColor: colors.border }]}><Text style={[styles.question, { color: colors.foreground }]}>{question}</Text><Text style={[styles.answer, { color: colors.muted }]}>{answer}</Text></View>)}</View>
+        <Header title={t("مركز المساعدة")} subtitle={t("إجابات واضحة ومساندة آمنة لمستخدمي دار السلع")} />
+
+        <SectionHeader title={t("الأسئلة الشائعة")} />
+        <Card style={{ paddingVertical: 4 }}>
+          {FAQ.map((item, index) => (
+            <Pressable key={item.q.ar} onPress={() => setOpen(open === index ? null : index)} style={[styles.faq, index < FAQ.length - 1 && { borderBottomColor: colors.border, borderBottomWidth: 1 }]}>
+              <View style={styles.faqHead}>
+                <Text style={[styles.question, { color: colors.foreground }]}>{pick(item.q)}</Text>
+                <MaterialIcons name={open === index ? "expand-less" : "expand-more"} size={22} color={colors.muted} />
+              </View>
+              {open === index ? <Text style={[styles.answer, { color: colors.muted }]}>{pick(item.a)}</Text> : null}
+            </Pressable>
+          ))}
+        </Card>
+
+        <SectionHeader title={t("الأدلة والسياسات")} />
+        <Card style={{ paddingVertical: 4 }}>
+          {LINKS.map((link, index) => (
+            <Pressable key={link.key} onPress={() => router.push(`/${link.key}` as never)} style={[styles.link, index < LINKS.length - 1 && { borderBottomColor: colors.border, borderBottomWidth: 1 }]}>
+              <MaterialIcons name={link.icon} size={21} color={colors.primary} />
+              <Text style={[styles.linkText, { color: colors.foreground }]}>{pick(PAGES[link.key].title)}</Text>
+              <MaterialIcons name={isRTL() ? "chevron-left" : "chevron-right"} size={20} color={colors.muted} />
+            </Pressable>
+          ))}
+        </Card>
+
+        <SectionHeader title={t("تواصل مع الدعم")} />
+        <Card>
+          <Text style={[styles.answer, { color: colors.muted, marginTop: 0 }]}>{t("راسلنا وسنرد خلال يوم عمل. اذكر رقم الإعلان إن وجد.")}</Text>
+          <Text selectable style={[styles.email, { color: colors.foreground }]}>{SUPPORT_EMAIL}</Text>
+          <View style={styles.row}>
+            <Button small icon="email" label={t("إرسال بريد")} onPress={email} style={{ flex: 1 }} />
+            <Button small variant="ghost" icon="content-copy" label={t("نسخ البريد")} onPress={copy} style={{ flex: 1 }} />
+          </View>
+        </Card>
+
+        <Button variant="outline" icon="report-problem" label={t("الإبلاغ عن مشكلة")} onPress={() => router.push("/report")} style={{ marginTop: 18 }} />
       </ScrollView>
     </ScreenContainer>
   );
 }
 
-const styles = StyleSheet.create({ content: { paddingBottom: 30 }, header: { alignItems: "center", flexDirection: "row-reverse", gap: 12, paddingTop: 15 }, back: { alignItems: "center", borderRadius: 21, height: 42, justifyContent: "center", width: 42 }, heading: { flex: 1 }, title: { fontSize: 27, fontWeight: "900", textAlign: "right" }, subtitle: { fontSize: 12, lineHeight: 19, marginTop: 4, textAlign: "right" }, banner: { alignItems: "center", borderRadius: 20, flexDirection: "row-reverse", gap: 12, marginTop: 22, padding: 17 }, bannerCopy: { flex: 1 }, bannerTitle: { color: "#FFFFFF", fontSize: 17, fontWeight: "900", textAlign: "right" }, bannerText: { color: "#FFFFFFDD", fontSize: 12, lineHeight: 19, marginTop: 5, textAlign: "right" }, sectionTitle: { fontSize: 19, fontWeight: "900", marginBottom: 11, marginTop: 27, textAlign: "right" }, grid: { flexDirection: "row-reverse", flexWrap: "wrap", gap: 11, justifyContent: "space-between" }, card: { borderRadius: 17, borderWidth: 1, minHeight: 186, padding: 14, width: "48.5%" }, iconBox: { alignItems: "center", borderRadius: 12, height: 42, justifyContent: "center", width: 42 }, cardTitle: { fontSize: 14, fontWeight: "900", lineHeight: 20, marginTop: 13, textAlign: "right" }, cardDetail: { fontSize: 11, lineHeight: 17, marginTop: 5, textAlign: "right" }, open: { fontSize: 11, fontWeight: "900", marginTop: 13, textAlign: "right" }, faq: { borderRadius: 17, borderWidth: 1, overflow: "hidden" }, faqRow: { borderBottomWidth: 1, padding: 14 }, question: { fontSize: 14, fontWeight: "900", textAlign: "right" }, answer: { fontSize: 12, lineHeight: 19, marginTop: 6, textAlign: "right" } });
+const styles = createStyles({
+  content: { paddingBottom: 40 },
+  faq: { paddingVertical: 12 },
+  faqHead: { alignItems: "center", flexDirection: "row-reverse", gap: 8 },
+  question: { flex: 1, fontSize: 14, fontWeight: "800", textAlign: "right" },
+  answer: { fontSize: 13, lineHeight: 21, marginTop: 8, textAlign: "right" },
+  link: { alignItems: "center", flexDirection: "row-reverse", gap: 10, paddingVertical: 13 },
+  linkText: { flex: 1, fontSize: 14, fontWeight: "700", textAlign: "right" },
+  email: { fontSize: 16, fontWeight: "900", marginVertical: 10, textAlign: "center" },
+  row: { flexDirection: "row-reverse", gap: 8 },
+});

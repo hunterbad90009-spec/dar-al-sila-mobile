@@ -6,7 +6,7 @@
 -- roles/merchants, store subscriptions, listing views, ratings, follows,
 -- notifications, store chats, report cases, and admin moderation rights.
 --
--- NOT APPLIED. Waiting for the owner's approval.
+-- Applied to TEST on 2026-11-03.
 -- Additive only: no existing table, column or row is dropped or changed.
 -- =====================================================================
 

@@ -1,49 +1,60 @@
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { router } from "expo-router";
+import { Pressable, ScrollView, Text, View } from "react-native";
+import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { ScreenContainer } from "@/components/screen-container";
-import { IconSymbol } from "@/components/ui/icon-symbol";
+import { ErrorState, Header, Loading } from "@/components/market/ui";
 import { useColors } from "@/hooks/use-colors";
-
-const groups = [
-  { title: "السيارات", icon: "car.fill" as const, items: ["سيارات للبيع", "سيارات للإيجار", "قطع غيار", "دراجات"] },
-  { title: "العقارات", icon: "house.fill" as const, items: ["شقق للبيع", "شقق للإيجار", "فلل", "أراضٍ"] },
-  { title: "الوظائف", icon: "briefcase.fill" as const, items: ["وظائف شاغرة", "باحثون عن عمل", "تدريب"] },
-  { title: "الإلكترونيات", icon: "desktopcomputer" as const, items: ["هواتف", "كمبيوترات", "أجهزة منزلية", "ألعاب"] },
-  { title: "الخدمات", icon: "wrench.and.screwdriver.fill" as const, items: ["صيانة", "نقل", "تصميم", "دروس خصوصية"] },
-];
+import { useColorScheme } from "@/hooks/use-color-scheme";
+import { categoryStyle } from "@/lib/category-icons";
+import { isRTL, pickName, t } from "@/lib/i18n";
+import { useCategories } from "@/lib/queries";
+import { createStyles } from "@/lib/i18n/rtl";
 
 export default function CategoriesScreen() {
   const colors = useColors();
+  const scheme = useColorScheme();
+  const categories = useCategories();
+
   return (
     <ScreenContainer className="px-4">
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.content}>
-        <Text style={[styles.title, { color: colors.foreground }]}>كل التصنيفات</Text>
-        <Text style={[styles.subtitle, { color: colors.muted }]}>اختر القسم للوصول إلى الإعلانات المناسبة لك</Text>
-        {groups.map((group) => (
-          <View key={group.title} style={[styles.group, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-            <View style={styles.groupHeader}>
-              <View style={[styles.iconCircle, { backgroundColor: colors.primary + "18" }]}><IconSymbol name={group.icon} size={23} color={colors.primary} /></View>
-              <Text style={[styles.groupTitle, { color: colors.foreground }]}>{group.title}</Text>
+        <Header back={false} title={t("كل التصنيفات")} subtitle={t("اختر القسم للوصول إلى الإعلانات المناسبة لك")} />
+        {categories.isLoading ? <Loading /> : categories.isError ? <ErrorState onRetry={() => categories.refetch()} /> : categories.top.map((top) => {
+          const style = categoryStyle(top.slug);
+          const groups = categories.childrenOf(top.id);
+          return (
+            <View key={top.id} style={[styles.group, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+              <Pressable onPress={() => router.push({ pathname: "/category/[slug]", params: { slug: top.slug } })} style={styles.groupHeader}>
+                <View style={[styles.iconCircle, { backgroundColor: scheme === "dark" ? colors.surfaceAlt : style.tint }]}><MaterialIcons name={style.icon} size={23} color={colors.primary} /></View>
+                <Text style={[styles.groupTitle, { color: colors.foreground }]}>{pickName(top)}</Text>
+                <Text style={[styles.viewAll, { color: colors.primary }]}>{t("عرض الكل")}</Text>
+              </Pressable>
+              {groups.length > 0 ? (
+                <View style={styles.items}>
+                  {groups.slice(0, 6).map((sub) => (
+                    <Pressable key={sub.id} onPress={() => router.push({ pathname: "/category/[slug]", params: { slug: sub.slug } })} style={({ pressed }) => [styles.item, { borderColor: colors.border, opacity: pressed ? 0.7 : 1 }]}>
+                      <Text style={[styles.itemText, { color: colors.foreground }]}>{pickName(sub)}</Text>
+                      <MaterialIcons name={isRTL() ? "chevron-left" : "chevron-right"} size={20} color={colors.muted} />
+                    </Pressable>
+                  ))}
+                </View>
+              ) : null}
             </View>
-            <View style={styles.items}>
-              {group.items.map((item) => <Pressable key={item} onPress={() => item === "شقق للبيع" || item === "فلل" || item === "أراضٍ" ? router.push({ pathname: "/real-estate", params: { mode: "sale" } }) : item === "شقق للإيجار" ? router.push({ pathname: "/real-estate", params: { mode: "rent" } }) : item === "صيانة" || item === "نقل" || item === "تصميم" || item === "دروس خصوصية" ? router.push("/services") : Alert.alert(item, `سيتم عرض إعلانات ${item} في دار السلع.`)} style={({ pressed }) => [styles.item, { borderColor: colors.border }, pressed && { opacity: 0.6 }]}><Text style={[styles.itemText, { color: colors.foreground }]}>{item}</Text><IconSymbol name="chevron.right" size={17} color={colors.muted} /></Pressable>)}
-            </View>
-          </View>
-        ))}
+          );
+        })}
       </ScrollView>
     </ScreenContainer>
   );
 }
 
-const styles = StyleSheet.create({
+const styles = createStyles({
   content: { paddingBottom: 30 },
-  title: { fontSize: 28, fontWeight: "900", marginTop: 14, textAlign: "right" },
-  subtitle: { fontSize: 14, marginTop: 5, marginBottom: 22, textAlign: "right" },
-  group: { borderRadius: 18, borderWidth: 1, marginBottom: 13, padding: 14 },
-  groupHeader: { alignItems: "center", flexDirection: "row-reverse", gap: 10, marginBottom: 12 },
+  group: { borderRadius: 18, borderWidth: 1, marginTop: 13, padding: 14 },
+  groupHeader: { alignItems: "center", flexDirection: "row-reverse", gap: 10 },
   iconCircle: { alignItems: "center", borderRadius: 22, height: 44, justifyContent: "center", width: 44 },
-  groupTitle: { fontSize: 18, fontWeight: "800" },
-  items: { gap: 8 },
-  item: { alignItems: "center", borderBottomWidth: 1, flexDirection: "row-reverse", justifyContent: "space-between", paddingBottom: 9, paddingTop: 4 },
-  itemText: { fontSize: 14, fontWeight: "600" },
+  groupTitle: { flex: 1, fontSize: 17, fontWeight: "900", textAlign: "right" },
+  viewAll: { fontSize: 12, fontWeight: "800" },
+  items: { gap: 4, marginTop: 10 },
+  item: { alignItems: "center", borderBottomWidth: 1, flexDirection: "row-reverse", justifyContent: "space-between", paddingVertical: 10 },
+  itemText: { flex: 1, fontSize: 14, fontWeight: "600", textAlign: "right" },
 });

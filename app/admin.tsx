@@ -1,59 +1,350 @@
-import { useMemo, useState } from "react";
-import { Alert, Pressable, ScrollView, Share, StyleSheet, Text, TextInput, View } from "react-native";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { router } from "expo-router";
+import { useState } from "react";
+import { Image, Pressable, ScrollView, Switch, Text, View } from "react-native";
+import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { ScreenContainer } from "@/components/screen-container";
+import { Button, Card, Chip, EmptyState, ErrorState, Field, Header, Input, Loading, StatusPill, notify } from "@/components/market/ui";
 import { useAuth } from "@/hooks/use-auth";
 import { useColors } from "@/hooks/use-colors";
-import { trpc } from "@/lib/trpc";
+import * as data from "@/lib/data";
+import { formatDate, formatNumber, pickName, t, timeAgo } from "@/lib/i18n";
+import { STORE_TYPES } from "@/lib/store-types";
+import { createStyles } from "@/lib/i18n/rtl";
 
-const sections = ["نظرة عامة", "الإعلانات", "المستخدمون", "البلاغات", "الصور", "التصنيفات", "المحتوى", "الإعدادات", "الصلاحيات", "سجل العمليات"] as const;
-type Section = (typeof sections)[number];
+type Section = "overview" | "queue" | "listings" | "users" | "stores" | "categories" | "reports" | "audit" | "settings";
+const SECTIONS: { key: Section; label: string; icon: keyof typeof MaterialIcons.glyphMap }[] = [
+  { key: "overview", label: "نظرة عامة", icon: "dashboard" },
+  { key: "queue", label: "قائمة المراجعة", icon: "fact-check" },
+  { key: "listings", label: "الإعلانات", icon: "view-list" },
+  { key: "users", label: "المستخدمون والأدوار", icon: "people" },
+  { key: "stores", label: "المتاجر", icon: "storefront" },
+  { key: "categories", label: "التصنيفات", icon: "category" },
+  { key: "reports", label: "البلاغات", icon: "flag" },
+  { key: "audit", label: "سجل الإجراءات", icon: "history" },
+  { key: "settings", label: "إعدادات المنصة", icon: "settings" },
+];
 
-type Listing = { id: string; title: string; seller: string; category: string; status: string; risk: string; date: string };
+const REASON_LABELS: Record<data.ReportReason, string> = {
+  fraud: "احتيال أو نصب", misleading: "معلومات مضللة", inappropriate: "محتوى غير لائق", suspicious_seller: "بائع مشبوه",
+  prohibited: "منتج ممنوع", abuse: "إساءة أو تحرش", other: "سبب آخر",
+};
 
+/**
+ * Protected administration area (spec 4.15). The role check here only decides what to
+ * show; every read and write is enforced again in the database (is_admin() RLS) and
+ * logged to admin_audit_logs by a trigger.
+ */
 export default function AdminScreen() {
   const colors = useColors();
   const { user, loading } = useAuth();
-  const [active, setActive] = useState<Section>("نظرة عامة");
-  const [query, setQuery] = useState("");
-  const [selectedListing, setSelectedListing] = useState<Listing | null>(null);
-  const adminListings = trpc.admin.listings.useQuery({ search: query || undefined }, { enabled: user?.role === "admin" });
-  const moderateMutation = trpc.admin.moderateListing.useMutation({ onSuccess: () => adminListings.refetch() });
+  const [section, setSection] = useState<Section>("overview");
 
-  const databaseListings: Listing[] = (adminListings.data ?? []).map((item) => ({ id: item.publicId, title: item.title ?? "بدون عنوان", seller: `المستخدم #${item.sellerId}`, category: item.category ?? "غير محدد", status: item.status === "published" ? "منشور" : item.status === "rejected" ? "مرفوض" : item.status === "suspended" ? "معلّق" : "بانتظار المراجعة", risk: item.moderationReason ? "متوسط" : "منخفض", date: item.createdAt.toLocaleString("ar-OM") }));
-  const filteredListings = useMemo(() => databaseListings.filter((item) => `${item.id} ${item.title} ${item.seller} ${item.category}`.toLowerCase().includes(query.toLowerCase())), [databaseListings, query]);
-  const act = (message: string) => Alert.alert("لوحة المشرف", message);
-  const updateListing = async (id: string, status: string) => {
-    const nextStatus = status === "منشور" ? "published" : status === "مرفوض" ? "rejected" : "suspended";
-    await moderateMutation.mutateAsync({ publicId: id, status: nextStatus, reason: status === "مرفوض" ? "قرار المشرف بعد مراجعة الإعلان." : undefined });
-    setSelectedListing(null);
-  };
+  if (loading) return <ScreenContainer><Loading /></ScreenContainer>;
+  if (user?.role !== "admin") {
+    return <ScreenContainer className="px-4"><Header title={t("لوحة المشرف")} /><EmptyState icon="lock" title={t("غير مصرح")} text={t("هذه الصفحة لفريق إدارة دار السلع فقط.")} actionLabel={t("العودة للرئيسية")} onAction={() => router.replace("/(tabs)")} /></ScreenContainer>;
+  }
 
-  if (loading) return <ScreenContainer className="items-center justify-center"><Text style={{ color: colors.muted }}>جارٍ التحقق من صلاحيات المشرف...</Text></ScreenContainer>;
-  if (!user || user.role !== "admin") return <ScreenContainer className="items-center justify-center px-6"><View style={[styles.deniedCard, { backgroundColor: colors.surface, borderColor: colors.border }]}><Text style={[styles.deniedTitle, { color: colors.foreground }]}>الوصول مخصص للمشرفين</Text><Text style={[styles.deniedText, { color: colors.muted }]}>لا تظهر أدوات الإدارة إلا للحسابات التي تحمل دور المشرف.</Text></View></ScreenContainer>;
-
-  return <ScreenContainer edges={["top", "left", "right", "bottom"]} containerClassName="bg-[#F4F1EA]"><View style={styles.shell}><View style={[styles.header, { backgroundColor: "#123D2B" }]}><View><Text style={styles.brand}>دار السلع</Text><Text style={styles.headerSubtitle}>مركز التحكم والإشراف</Text></View><View style={styles.headerActions}><Pressable onPress={() => act("تم تحديث بيانات اللوحة.")} style={styles.headerButton}><Text style={styles.headerButtonText}>تحديث</Text></Pressable><View style={styles.avatar}><Text style={styles.avatarText}>{(user.name ?? "م").slice(0, 1)}</Text></View></View></View><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.nav}>{sections.map((section) => <Pressable key={section} onPress={() => setActive(section)} style={[styles.navItem, active === section && styles.navItemActive]}><Text style={[styles.navText, { color: active === section ? "#FFFFFF" : "#355245" }]}>{section}</Text></Pressable>)}</ScrollView><ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.content}><View style={styles.pageHeading}><View><Text style={[styles.pageTitle, { color: "#123D2B" }]}>{active}</Text><Text style={[styles.pageSubtitle, { color: colors.muted }]}>إدارة آمنة ومنظمة لمنصة دار السلع</Text></View><Pressable onPress={() => act("تم فتح مركز المساعدة للمشرف.")} style={styles.helpButton}><Text style={styles.helpText}>مساعدة المشرف</Text></Pressable></View>{active === "نظرة عامة" && <Overview colors={colors} onNavigate={setActive} listingCount={databaseListings.length} listingsLoading={adminListings.isLoading} />}{active === "الإعلانات" && <Listings colors={colors} listings={filteredListings} query={query} setQuery={setQuery} onSelect={setSelectedListing} />}{active === "المستخدمون" && <Users colors={colors} onAction={act} />}{active === "البلاغات" && <Reports colors={colors} onAction={act} />}{active === "الصور" && <ImageQueue colors={colors} onAction={act} />}{active === "التصنيفات" && <ManagementCards colors={colors} title="إدارة التصنيفات والحقول" items={["سيارات ومركبات", "عقارات للبيع", "إلكترونيات وأجهزة منزلية", "منزل وحدائق", "الخدمات", "الموضة والأطفال"]} actions={["إضافة قسم", "ترتيب الأقسام", "إدارة الحقول"]} onAction={act} />}{active === "المحتوى" && <ManagementCards colors={colors} title="إدارة المحتوى العام" items={["البنرات الرئيسية", "القصص والمتاجر", "الإعلانات المميزة", "الإشعارات والتنبيهات", "الأسئلة الشائعة", "سياسة النشر"]} actions={["إضافة محتوى", "معاينة", "نشر التغيير"]} onAction={act} />}{active === "الإعدادات" && <Settings colors={colors} onAction={act} />}{active === "الصلاحيات" && <Roles colors={colors} onAction={act} />}{active === "سجل العمليات" && <AuditLog colors={colors} />}</ScrollView></View>{selectedListing && <ListingModal colors={colors} listing={selectedListing} busy={moderateMutation.isPending} onClose={() => setSelectedListing(null)} onAction={(status: string) => updateListing(selectedListing.id, status)} />}</ScreenContainer>;
+  return (
+    <ScreenContainer className="px-4">
+      <Header title={t("لوحة المشرف")} subtitle={t("كل إجراء هنا يُسجَّل في سجل الإجراءات")} />
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabs} style={{ flexGrow: 0 }}>
+        {SECTIONS.map((s) => <Chip key={s.key} icon={s.icon} label={t(s.label)} active={section === s.key} onPress={() => setSection(s.key)} />)}
+      </ScrollView>
+      <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={styles.content}>
+        {section === "overview" && <Overview go={setSection} />}
+        {section === "queue" && <ListingsPanel fixedStatus="pending" />}
+        {section === "listings" && <ListingsPanel />}
+        {section === "users" && <UsersPanel />}
+        {section === "stores" && <StoresPanel />}
+        {section === "categories" && <CategoriesPanel />}
+        {section === "reports" && <ReportsPanel />}
+        {section === "audit" && <AuditPanel />}
+        {section === "settings" && <SettingsPanel />}
+        <View style={{ height: 30 }} />
+      </ScrollView>
+    </ScreenContainer>
+  );
 }
 
-function Overview({ colors, onNavigate, listingCount, listingsLoading }: { colors: any; onNavigate: (section: Section) => void; listingCount: number; listingsLoading: boolean }) { const stats = [["الإعلانات المحملة", listingsLoading ? "…" : String(listingCount), "الإعلانات"], ["المستخدمون", "—", "المستخدمون"], ["البلاغات", "—", "البلاغات"], ["الصور", "—", "الصور"]] as const; return <><View style={styles.statsGrid}>{stats.map(([label, value, target]) => <Pressable key={label} onPress={() => onNavigate(target)} style={[styles.statCard, { backgroundColor: colors.surface, borderColor: colors.border }]}><Text style={[styles.statLabel, { color: colors.muted }]}>{label}</Text><Text style={[styles.statValue, { color: "#123D2B" }]}>{value}</Text><Text style={styles.statLink}>فتح القسم ←</Text></Pressable>)}</View><View style={styles.twoColumns}><View style={[styles.panel, { backgroundColor: colors.surface, borderColor: colors.border }]}><Text style={[styles.panelTitle, { color: colors.foreground }]}>آخر الإعلانات المحملة</Text><Text style={[styles.rowMeta, { color: colors.muted }]}>{listingsLoading ? "جارٍ تحميل البيانات..." : listingCount > 0 ? "يمكنك فتح قسم الإعلانات لمراجعة السجلات الحقيقية." : "لا توجد إعلانات منشورة أو بيانات متاحة حاليًا."}</Text></View><View style={[styles.panel, { backgroundColor: "#123D2B" }]}><Text style={styles.whitePanelTitle}>صحة المنصة</Text><Health label="فحص OAuth" value="راجع الحالة" /><Health label="قاعدة البيانات" value="حسب الاستجابة" /><Health label="التخزين" value="حسب المزود" /></View></View></>; }
-function Health({ label, value }: { label: string; value: string }) { return <View style={styles.healthRow}><Text style={styles.healthValue}>{value}</Text><Text style={styles.healthLabel}>{label}</Text></View>; }
-function Listings({ colors, listings, query, setQuery, onSelect }: any) { const exportListings = async () => { const csv = ["id,title,seller,category,status,risk,date", ...listings.map((item: Listing) => [item.id, item.title, item.seller, item.category, item.status, item.risk, item.date].map((value) => `"${String(value).replaceAll('"', '""')}"`).join(","))].join("\n"); try { await Share.share({ message: csv, title: "إعلانات دار السلع" }); } catch { Alert.alert("التصدير", "تعذر فتح نافذة المشاركة."); } }; return <View style={[styles.panel, { backgroundColor: colors.surface, borderColor: colors.border }]}><View style={styles.toolbar}><TextInput value={query} onChangeText={setQuery} placeholder="بحث برقم الإعلان أو العنوان أو البائع" placeholderTextColor={colors.muted} style={[styles.search, { color: colors.foreground, borderColor: colors.border }]} /><Pressable onPress={exportListings} style={styles.goldButton}><Text style={styles.goldButtonText}>تصدير</Text></Pressable></View><Text style={[styles.panelTitle, { color: colors.foreground }]}>قائمة الإعلانات ({listings.length})</Text>{listings.map((item: Listing) => <Pressable key={item.id} onPress={() => onSelect(item)} style={[styles.tableRow, { borderBottomColor: colors.border }]}><View style={styles.rowActions}><Text style={styles.viewAction}>مراجعة</Text><Text style={[styles.badge, { backgroundColor: item.status === "مرفوض" ? "#FCE2DF" : item.status === "منشور" ? "#DDF3E7" : "#FFF1CF", color: item.status === "مرفوض" ? "#9A2D26" : item.status === "منشور" ? "#17643C" : "#8A5A00" }]}>{item.status}</Text></View><View style={styles.rowCopy}><Text style={[styles.rowTitle, { color: colors.foreground }]}>{item.title}</Text><Text style={[styles.rowMeta, { color: colors.muted }]}>{item.id} • {item.seller} • {item.category}</Text></View></Pressable>)}</View>; }
-function Users({ colors, onAction }: any) {
-  const [query, setQuery] = useState("");
-  const usersQuery = trpc.admin.users.useQuery({ search: query || undefined });
-  const items = usersQuery.data ?? [];
-  return <View style={[styles.panel, { backgroundColor: colors.surface, borderColor: colors.border }]}><View style={styles.toolbar}><TextInput value={query} onChangeText={setQuery} placeholder="ابحث عن مستخدم أو بريد إلكتروني" placeholderTextColor={colors.muted} style={[styles.search, { color: colors.foreground, borderColor: colors.border }]} /><Pressable onPress={() => usersQuery.refetch()} style={styles.goldButton}><Text style={styles.goldButtonText}>تحديث</Text></Pressable></View><Text style={[styles.panelTitle, { color: colors.foreground }]}>{usersQuery.isLoading ? "جارٍ تحميل المستخدمين..." : `المستخدمون (${items.length})`}</Text>{usersQuery.isError && <Text style={[styles.rowMeta, { color: colors.error }]}>تعذر تحميل المستخدمين.</Text>}{!usersQuery.isLoading && items.length === 0 && <Text style={[styles.rowMeta, { color: colors.muted }]}>لا توجد نتائج.</Text>}{items.map((item) => <View key={item.id} style={[styles.tableRow, { borderBottomColor: colors.border }]}><View style={styles.rowActions}><Pressable onPress={() => onAction(`تم فتح ملف ${item.name ?? "المستخدم"}`)}><Text style={styles.viewAction}>الملف</Text></Pressable><Text style={[styles.badge, { backgroundColor: item.merchantStatus === "active" ? "#DDF3E7" : "#FFF1CF", color: item.merchantStatus === "active" ? "#17643C" : "#8A5A00" }]}>{item.role === "merchant" ? "تاجر" : "مستخدم"}</Text></View><View style={styles.rowCopy}><Text style={[styles.rowTitle, { color: colors.foreground }]}>{item.name || "بدون اسم"}</Text><Text style={[styles.rowMeta, { color: colors.muted }]}>{item.email || "بريد غير متاح"} • {item.merchantStatus}</Text></View></View>)}</View>;
-}
-function Reports({ colors, onAction }: any) {
-  const reportsQuery = trpc.reports.adminList.useQuery();
-  const updateReport = trpc.reports.adminUpdate.useMutation({ onSuccess: () => reportsQuery.refetch() });
-  const items = reportsQuery.data ?? [];
-  return <View style={[styles.panel, { backgroundColor: colors.surface, borderColor: colors.border }]}><Text style={[styles.panelTitle, { color: colors.foreground }]}>البلاغات والشكاوى ({items.length})</Text>{reportsQuery.isLoading ? <Text style={[styles.rowMeta, { color: colors.muted }]}>جارٍ تحميل البلاغات...</Text> : items.length === 0 ? <Text style={[styles.rowMeta, { color: colors.muted }]}>لا توجد بلاغات مسجلة.</Text> : items.map(({ report, listingPublicId, listingTitle, reporterName }) => <View key={report.publicId} style={[styles.tableRow, { borderBottomColor: colors.border }]}><View style={styles.rowActions}><Pressable onPress={() => updateReport.mutate({ publicId: report.publicId, status: report.status === "open" ? "reviewing" : "resolved", resolution: "تمت مراجعة البلاغ من لوحة المشرف." })}><Text style={styles.viewAction}>{report.status === "resolved" ? "مغلق" : "تحديث"}</Text></Pressable><Text style={[styles.badge, { backgroundColor: report.priority === "high" ? "#FCE2DF" : "#FFF1CF", color: report.priority === "high" ? "#9A2D26" : "#8A5A00" }]}>{report.priority === "high" ? "عالية" : report.priority === "low" ? "منخفضة" : "متوسطة"}</Text></View><View style={styles.rowCopy}><Text style={[styles.rowTitle, { color: colors.foreground }]}>{report.subject}</Text><Text style={[styles.rowMeta, { color: colors.muted }]}>{report.publicId} • {listingTitle || listingPublicId || "بلاغ عام"} • {reporterName || "مستخدم"} • {report.status}</Text></View></View>)}</View>;
-}
-function ImageQueue({ colors, onAction }: any) { return <View style={[styles.panel, { backgroundColor: colors.surface, borderColor: colors.border }]}><Text style={[styles.panelTitle, { color: colors.foreground }]}>مراجعة الصور</Text><Text style={[styles.rowMeta, { color: colors.muted }]}>لا توجد قائمة صور مراجعة خادمية متاحة في مخطط قاعدة البيانات الحالي. لن نعرض أرقامًا افتراضية على أنها بيانات حقيقية.</Text><Pressable onPress={() => onAction("يلزم توصيل قائمة media_assets الحقيقية قبل بدء مراجعة الصور.")} style={styles.goldButton}><Text style={styles.goldButtonText}>حالة الربط</Text></Pressable></View>; }
-function ManagementCards({ colors, title, items, actions, onAction }: any) { return <View style={[styles.panel, { backgroundColor: colors.surface, borderColor: colors.border }]}><Text style={[styles.panelTitle, { color: colors.foreground }]}>{title}</Text><View style={styles.managementGrid}>{items.map((item: string) => <Pressable key={item} onPress={() => onAction(`تم فتح: ${item}`)} style={[styles.managementCard, { backgroundColor: "#F8F5EE", borderColor: colors.border }]}><Text style={[styles.managementText, { color: colors.foreground }]}>{item}</Text><Text style={styles.arrow}>←</Text></Pressable>)}</View><View style={styles.actionRow}>{actions.map((action: string) => <Pressable key={action} onPress={() => onAction(action)} style={styles.goldButton}><Text style={styles.goldButtonText}>{action}</Text></Pressable>)}</View></View>; }
-function Settings({ colors, onAction }: any) { return <ManagementCards colors={colors} title="إعدادات المنصة" items={["الهوية والاسم والشعار", "سياسات النشر والفحص", "حد الصور وحجم الملفات", "البريد والدعم الفني", "الموقع والخريطة", "النسخ الاحتياطي"]} actions={["حفظ الإعدادات", "اختبار الأمان", "مراجعة الصلاحيات"]} onAction={onAction} />; }
-function Roles({ colors, onAction }: any) { return <ManagementCards colors={colors} title="الأدوار والصلاحيات" items={["المالك — جميع الصلاحيات", "مشرف مراجعة — الإعلانات والصور", "دعم فني — البلاغات والمستخدمون", "مراقب — قراءة الإحصاءات فقط"]} actions={["إضافة مشرف", "تغيير دور", "تعطيل حساب"]} onAction={onAction} />; }
-function AuditLog({ colors }: any) { return <View style={[styles.panel, { backgroundColor: colors.surface, borderColor: colors.border }]}><Text style={[styles.panelTitle, { color: colors.foreground }]}>سجل العمليات الحساسة</Text><Text style={[styles.rowMeta, { color: colors.muted }]}>مصدر سجل التدقيق الخادمي غير موصول بعد. لن نعرض أحداثًا افتراضية على أنها عمليات حقيقية.</Text></View>; }
-function ListingModal({ colors, listing, busy, onClose, onAction }: any) { return <View style={styles.modalLayer}><View style={[styles.detailCard, { backgroundColor: colors.surface }]}><Text style={[styles.detailTitle, { color: colors.foreground }]}>مراجعة الإعلان</Text><Text style={[styles.detailName, { color: colors.foreground }]}>{listing.title}</Text><Text style={[styles.rowMeta, { color: colors.muted }]}>{listing.id} • {listing.seller} • {listing.category}</Text><Text style={[styles.detailText, { color: colors.muted }]}>حالة الفحص: {listing.status}. مستوى المخاطر: {listing.risk}. يمكن للمشرف مراجعة الصور والنص قبل اتخاذ القرار.</Text><View style={styles.actionRow}><Pressable disabled={busy} onPress={() => onAction("منشور")} style={styles.approveButton}><Text style={styles.approveText}>قبول ونشر</Text></Pressable><Pressable disabled={busy} onPress={() => onAction("مرفوض")} style={styles.rejectButton}><Text style={styles.rejectText}>رفض</Text></Pressable><Pressable onPress={onClose} style={styles.cancelButton}><Text style={[styles.cancelText, { color: colors.foreground }]}>إغلاق</Text></Pressable></View></View></View>; }
+function Overview({ go }: { go: (s: Section) => void }) {
+    const colors = useColors();
+    const q = useQuery({ queryKey: ["admin", "overview"], queryFn: data.adminOverview });
+    if (q.isLoading) return <Loading />;
+    if (q.isError) return <ErrorState message={data.friendlyError(q.error)} onRetry={() => q.refetch()} />;
+    const o = q.data!;
+    const tiles: { label: string; value: number; section: Section; alert?: boolean }[] = [
+      { label: "بانتظار المراجعة", value: o.listings.pending, section: "queue", alert: o.listings.pending > 0 },
+      { label: "بلاغات مفتوحة", value: o.reportsOpen, section: "reports", alert: o.reportsOpen > 0 },
+      { label: "متاجر بانتظار التفعيل", value: o.stores.pending, section: "stores", alert: o.stores.pending > 0 },
+      { label: "إعلانات منشورة", value: o.listings.active, section: "listings" },
+      { label: "إعلانات مرفوضة", value: o.listings.rejected, section: "listings" },
+      { label: "إعلانات موقوفة", value: o.listings.paused, section: "listings" },
+      { label: "المستخدمون", value: o.users, section: "users" },
+      { label: "متاجر مفعّلة", value: o.stores.active, section: "stores" },
+      { label: "المحادثات", value: o.conversations, section: "overview" },
+    ];
+    return (
+      <View style={styles.tiles}>
+        {tiles.map((tile) => (
+          <Pressable key={tile.label} onPress={() => go(tile.section)} style={[styles.tile, { backgroundColor: colors.surface, borderColor: tile.alert ? colors.accent : colors.border }]}>
+            <Text style={[styles.tileValue, { color: tile.alert ? colors.warning : colors.primary }]}>{formatNumber(tile.value)}</Text>
+            <Text style={[styles.tileLabel, { color: colors.muted }]}>{t(tile.label)}</Text>
+          </Pressable>
+        ))}
+      </View>
+    );
+  }
 
-const styles = StyleSheet.create({ shell: { flex: 1 }, header: { alignItems: "center", flexDirection: "row-reverse", justifyContent: "space-between", paddingHorizontal: 18, paddingVertical: 18 }, brand: { color: "#FFFFFF", fontSize: 24, fontWeight: "900", textAlign: "right" }, headerSubtitle: { color: "#BFD5C4", fontSize: 12, marginTop: 3, textAlign: "right" }, headerActions: { alignItems: "center", flexDirection: "row-reverse", gap: 10 }, headerButton: { borderColor: "#BFD5C4", borderRadius: 9, borderWidth: 1, paddingHorizontal: 10, paddingVertical: 7 }, headerButtonText: { color: "#FFFFFF", fontSize: 12, fontWeight: "800" }, avatar: { alignItems: "center", backgroundColor: "#D9A441", borderRadius: 20, height: 40, justifyContent: "center", width: 40 }, avatarText: { color: "#123D2B", fontSize: 17, fontWeight: "900" }, nav: { backgroundColor: "#E7E1D5", gap: 7, paddingHorizontal: 12, paddingVertical: 10 }, navItem: { borderRadius: 10, paddingHorizontal: 13, paddingVertical: 9 }, navItemActive: { backgroundColor: "#123D2B" }, navText: { fontSize: 12, fontWeight: "800" }, content: { padding: 15, paddingBottom: 45 }, pageHeading: { alignItems: "center", flexDirection: "row-reverse", justifyContent: "space-between", marginBottom: 16 }, pageTitle: { fontSize: 28, fontWeight: "900", textAlign: "right" }, pageSubtitle: { fontSize: 13, marginTop: 3, textAlign: "right" }, helpButton: { backgroundColor: "#FFFFFF", borderColor: "#D9A441", borderRadius: 11, borderWidth: 1, paddingHorizontal: 11, paddingVertical: 9 }, helpText: { color: "#7A5600", fontSize: 12, fontWeight: "800" }, statsGrid: { flexDirection: "row-reverse", flexWrap: "wrap", gap: 10 }, statCard: { borderRadius: 16, borderWidth: 1, minHeight: 118, padding: 14, width: "48%" }, statLabel: { fontSize: 12, fontWeight: "700", textAlign: "right" }, statValue: { fontSize: 28, fontWeight: "900", marginTop: 8, textAlign: "right" }, statLink: { color: "#B27A0F", fontSize: 11, fontWeight: "800", marginTop: 5, textAlign: "right" }, twoColumns: { gap: 12, marginTop: 14 }, panel: { borderRadius: 16, borderWidth: 1, marginBottom: 14, padding: 15 }, panelTitle: { fontSize: 17, fontWeight: "900", marginBottom: 13, textAlign: "right" }, activityRow: { alignItems: "center", borderBottomColor: "#E9E2D7", borderBottomWidth: 1, flexDirection: "row-reverse", gap: 9, paddingVertical: 11 }, dot: { borderRadius: 6, height: 10, width: 10 }, activityCopy: { flex: 1 }, activityTitle: { fontSize: 13, fontWeight: "800", textAlign: "right" }, activityMeta: { fontSize: 11, marginTop: 3, textAlign: "right" }, whitePanelTitle: { color: "#FFFFFF", fontSize: 17, fontWeight: "900", marginBottom: 10, textAlign: "right" }, healthRow: { borderBottomColor: "#37634E", borderBottomWidth: 1, flexDirection: "row", justifyContent: "space-between", paddingVertical: 12 }, healthLabel: { color: "#BFD5C4", fontSize: 12 }, healthValue: { color: "#D9A441", fontSize: 15, fontWeight: "900" }, toolbar: { alignItems: "center", flexDirection: "row-reverse", gap: 8, marginBottom: 15 }, search: { borderRadius: 11, borderWidth: 1, flex: 1, minHeight: 45, paddingHorizontal: 12, textAlign: "right" }, goldButton: { backgroundColor: "#D9A441", borderRadius: 10, paddingHorizontal: 12, paddingVertical: 11 }, goldButtonText: { color: "#1B241D", fontSize: 12, fontWeight: "900" }, tableRow: { alignItems: "center", borderBottomWidth: 1, flexDirection: "row-reverse", gap: 10, paddingVertical: 13 }, rowCopy: { flex: 1 }, rowTitle: { fontSize: 14, fontWeight: "800", textAlign: "right" }, rowMeta: { fontSize: 11, marginTop: 3, textAlign: "right" }, rowActions: { alignItems: "flex-start", gap: 8, minWidth: 80 }, badge: { borderRadius: 8, fontSize: 10, fontWeight: "800", overflow: "hidden", paddingHorizontal: 7, paddingVertical: 5 }, viewAction: { color: "#1671A8", fontSize: 12, fontWeight: "900" }, dangerAction: { color: "#B33B32", fontSize: 12, fontWeight: "900" }, managementGrid: { gap: 9 }, managementCard: { alignItems: "center", borderRadius: 12, borderWidth: 1, flexDirection: "row-reverse", justifyContent: "space-between", padding: 14 }, managementText: { fontSize: 13, fontWeight: "800" }, arrow: { color: "#B27A0F", fontSize: 18, fontWeight: "900" }, actionRow: { flexDirection: "row-reverse", flexWrap: "wrap", gap: 8, marginTop: 15 }, auditRow: { borderBottomWidth: 1, paddingVertical: 13 }, deniedCard: { borderRadius: 18, borderWidth: 1, padding: 22 }, deniedTitle: { fontSize: 21, fontWeight: "900", textAlign: "center" }, deniedText: { fontSize: 14, lineHeight: 22, marginTop: 8, textAlign: "center" }, modalLayer: { backgroundColor: "rgba(0,0,0,0.5)", bottom: 0, justifyContent: "center", left: 0, padding: 18, position: "absolute", right: 0, top: 0 }, detailCard: { borderRadius: 20, padding: 20 }, detailTitle: { fontSize: 20, fontWeight: "900", textAlign: "right" }, detailName: { fontSize: 18, fontWeight: "800", marginTop: 18, textAlign: "right" }, detailText: { fontSize: 13, lineHeight: 21, marginTop: 15, textAlign: "right" }, approveButton: { backgroundColor: "#17643C", borderRadius: 10, paddingHorizontal: 13, paddingVertical: 11 }, approveText: { color: "#FFFFFF", fontSize: 12, fontWeight: "900" }, rejectButton: { backgroundColor: "#FCE2DF", borderRadius: 10, paddingHorizontal: 13, paddingVertical: 11 }, rejectText: { color: "#9A2D26", fontSize: 12, fontWeight: "900" }, cancelButton: { borderColor: "#C9C2B7", borderRadius: 10, borderWidth: 1, paddingHorizontal: 13, paddingVertical: 11 }, cancelText: { fontSize: 12, fontWeight: "900" } });
+function ListingsPanel({ fixedStatus }: { fixedStatus?: data.DbStatus }) {
+    const colors = useColors();
+    const client = useQueryClient();
+    const [status, setStatus] = useState<data.DbStatus | "all">(fixedStatus ?? "all");
+    const [q, setQ] = useState("");
+    const [reasons, setReasons] = useState<Record<string, string>>({});
+    const list = useQuery({ queryKey: ["admin", "listings", status, q], queryFn: () => data.adminListings({ status, q }) });
+    const act = useMutation({
+      mutationFn: data.moderateListing,
+      onSuccess: () => { void client.invalidateQueries({ queryKey: ["admin"] }); },
+      onError: (e) => notify(t("تعذر تنفيذ الإجراء"), data.friendlyError(e)),
+    });
+    return (
+      <>
+        {!fixedStatus ? (
+          <>
+            <Input value={q} onChangeText={setQ} placeholder={t("ابحث بعنوان الإعلان")} />
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabs}>
+              {(["all", "active", "pending", "rejected", "paused", "draft", "sold"] as const).map((s) => <Chip key={s} label={s === "all" ? t("الكل") : t(STATUS_TEXT[s])} active={status === s} onPress={() => setStatus(s)} />)}
+            </ScrollView>
+          </>
+        ) : <Text style={[styles.note, { color: colors.muted }]}>{t("الإعلانات التي تنتظر الموافقة قبل ظهورها (عند تفعيل المراجعة المسبقة من الإعدادات).")}</Text>}
+        {list.isLoading ? <Loading /> : list.isError ? <ErrorState message={data.friendlyError(list.error)} onRetry={() => list.refetch()} /> : (list.data ?? []).length === 0 ? <EmptyState title={t("لا توجد إعلانات")} /> : list.data!.map((l) => (
+          <Card key={l.id} style={styles.item}>
+            <Pressable onPress={() => router.push({ pathname: "/listing/[id]", params: { id: l.id } })} style={styles.itemHead}>
+              {l.imageUrl ? <Image source={{ uri: l.imageUrl }} style={styles.thumb} /> : <View style={[styles.thumb, { backgroundColor: colors.surfaceAlt }]} />}
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.itemTitle, { color: colors.foreground }]} numberOfLines={2}>{l.title}</Text>
+                <Text style={[styles.meta, { color: colors.muted }]}>{l.sellerName} · {l.price} · {timeAgo(l.createdAt)}</Text>
+              </View>
+              <StatusPill status={l.status} />
+            </Pressable>
+            <Input value={reasons[l.id] ?? ""} onChangeText={(v) => setReasons((r) => ({ ...r, [l.id]: v }))} placeholder={t("سبب الرفض أو الإيقاف (يُرسل للمعلن)")} style={{ marginTop: 10 }} />
+            <View style={styles.actions}>
+              {l.status !== "active" ? <Button small icon="check" label={t("موافقة")} onPress={() => act.mutate({ id: l.id, action: "approve" })} /> : null}
+              {l.status === "pending" ? <Button small variant="danger" icon="close" label={t("رفض")} onPress={() => act.mutate({ id: l.id, action: "reject", reason: reasons[l.id] })} /> : null}
+              {l.status === "active" ? <Button small variant="danger" icon="block" label={t("إيقاف")} onPress={() => act.mutate({ id: l.id, action: "suspend", reason: reasons[l.id] })} /> : null}
+              <Button small variant="ghost" icon={l.isFeatured ? "star" : "star-border"} label={l.isFeatured ? t("إلغاء التمييز") : t("تمييز")} onPress={() => act.mutate({ id: l.id, action: l.isFeatured ? "unfeature" : "feature" })} />
+            </View>
+          </Card>
+        ))}
+      </>
+    );
+  }
+
+function UsersPanel() {
+    const colors = useColors();
+    const { user } = useAuth();
+    const client = useQueryClient();
+    const [q, setQ] = useState("");
+    const list = useQuery({ queryKey: ["admin", "users", q], queryFn: () => data.adminUsers({ q }) });
+    const setRole = useMutation({ mutationFn: data.adminSetRole, onSuccess: () => void client.invalidateQueries({ queryKey: ["admin", "users"] }), onError: (e) => notify(t("تعذر تغيير الدور"), data.friendlyError(e)) });
+    const ROLE_TEXT = { user: "مستخدم", merchant: "تاجر", admin: "مشرف" } as const;
+    return (
+      <>
+        <Input value={q} onChangeText={setQ} placeholder={t("ابحث بالاسم أو اسم المستخدم")} />
+        {list.isLoading ? <Loading /> : list.isError ? <ErrorState message={data.friendlyError(list.error)} /> : list.data!.map((u) => (
+          <Card key={u.id} style={styles.item}>
+            <Text style={[styles.itemTitle, { color: colors.foreground }]}>{u.name}</Text>
+            <Text style={[styles.meta, { color: colors.muted }]}>{u.username ? `@${u.username} · ` : ""}{t("انضم {date}", { date: formatDate(u.createdAt) })}</Text>
+            <View style={styles.actions}>
+              {(["user", "merchant", "admin"] as const).map((r) => <Chip key={r} label={t(ROLE_TEXT[r])} active={u.role === r} onPress={() => u.role !== r && (u.id === user?.id ? notify(t("لا يمكنك تغيير دورك بنفسك.")) : setRole.mutate({ userId: u.id, role: r }))} />)}
+              <Button small variant="ghost" icon="list" label={t("إعلاناته")} onPress={() => router.push({ pathname: "/seller/[id]", params: { id: u.id } })} />
+            </View>
+          </Card>
+        ))}
+      </>
+    );
+  }
+
+function StoresPanel() {
+    const colors = useColors();
+    const client = useQueryClient();
+    const list = useQuery({ queryKey: ["admin", "stores"], queryFn: data.adminStores });
+    const update = useMutation({ mutationFn: data.adminUpdateStore, onSuccess: () => void client.invalidateQueries({ queryKey: ["admin"] }), onError: (e) => notify(t("تعذر تحديث المتجر"), data.friendlyError(e)) });
+    if (list.isLoading) return <Loading />;
+    if (list.isError) return <ErrorState message={data.friendlyError(list.error)} />;
+    if (!list.data!.length) return <EmptyState icon="storefront" title={t("لا توجد متاجر بعد")} />;
+    return <>{list.data!.map((s) => (
+      <Card key={s.id} style={styles.item}>
+        <View style={styles.itemHead}>
+          {s.logoUrl ? <Image source={{ uri: s.logoUrl }} style={styles.thumb} /> : <View style={[styles.thumb, { backgroundColor: colors.accentSoft }]} />}
+          <View style={{ flex: 1 }}>
+            <Text style={[styles.itemTitle, { color: colors.foreground }]}>{s.name}</Text>
+            <Text style={[styles.meta, { color: colors.muted }]}>{t(STORE_TYPES[s.storeType])} · {s.ownerName} · {t(s.status === "active" ? "مفعّل" : s.status === "pending" ? "بانتظار التفعيل" : "موقوف")}</Text>
+          </View>
+        </View>
+        <View style={styles.actions}>
+          {s.status !== "active" ? <Button small icon="check" label={t("تفعيل")} onPress={() => update.mutate({ id: s.id, status: "active" })} /> : <Button small variant="danger" icon="block" label={t("إيقاف")} onPress={() => update.mutate({ id: s.id, status: "suspended" })} />}
+          <Button small variant="ghost" icon={s.isFeatured ? "star" : "star-border"} label={s.isFeatured ? t("إلغاء التمييز") : t("تمييز")} onPress={() => update.mutate({ id: s.id, isFeatured: !s.isFeatured })} />
+          <Button small variant="ghost" icon="open-in-new" label={t("عرض")} onPress={() => router.push({ pathname: "/store/[merchantId]", params: { merchantId: s.ownerId } })} />
+        </View>
+      </Card>
+    ))}</>;
+  }
+
+function CategoriesPanel() {
+    const colors = useColors();
+    const client = useQueryClient();
+    const list = useQuery({ queryKey: ["admin", "categories"], queryFn: data.adminCategories });
+    const [parent, setParent] = useState<number | null>(null);
+    const [editing, setEditing] = useState<{ id?: number; name: string; name_ar: string } | null>(null);
+    const save = useMutation({
+      mutationFn: data.adminSaveCategory,
+      onSuccess: () => { setEditing(null); void client.invalidateQueries({ queryKey: ["admin", "categories"] }); void client.invalidateQueries({ queryKey: ["categories"] }); },
+      onError: (e) => notify(t("تعذر حفظ التصنيف"), data.friendlyError(e)),
+    });
+    if (list.isLoading) return <Loading />;
+    if (list.isError) return <ErrorState message={data.friendlyError(list.error)} />;
+    const rows = list.data!.filter((c) => c.parent_id === parent);
+    const parentRow = list.data!.find((c) => c.id === parent);
+    return (
+      <>
+        <View style={styles.actions}>
+          {parent ? <Button small variant="ghost" icon="arrow-upward" label={t("المستوى الأعلى")} onPress={() => setParent(parentRow?.parent_id ?? null)} /> : null}
+          <Button small icon="add" label={t("إضافة تصنيف هنا")} onPress={() => setEditing({ name: "", name_ar: "" })} />
+        </View>
+        {parentRow ? <Text style={[styles.note, { color: colors.muted }]}>{t("داخل: {name}", { name: pickName(parentRow) })}</Text> : null}
+        {editing ? (
+          <Card style={styles.item}>
+            <Field label={t("الاسم بالعربية")} required><Input value={editing.name_ar} onChangeText={(v) => setEditing({ ...editing, name_ar: v })} /></Field>
+            <Field label={t("الاسم بالإنجليزية")} required><Input value={editing.name} onChangeText={(v) => setEditing({ ...editing, name: v })} /></Field>
+            <View style={styles.actions}>
+              <Button small label={t("حفظ")} loading={save.isPending} onPress={() => save.mutate({ id: editing.id, name: editing.name, name_ar: editing.name_ar, parent_id: parent })} />
+              <Button small variant="ghost" label={t("إلغاء")} onPress={() => setEditing(null)} />
+            </View>
+          </Card>
+        ) : null}
+        {rows.map((c) => (
+          <Card key={c.id} style={[styles.item, !c.is_active && { opacity: 0.55 }]}>
+            <Pressable onPress={() => setParent(c.id)} style={styles.itemHead}>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.itemTitle, { color: colors.foreground }]}>{c.name_ar}</Text>
+                <Text style={[styles.meta, { color: colors.muted }]}>{c.name} · {t("{n} فرعي", { n: list.data!.filter((x) => x.parent_id === c.id).length })}</Text>
+              </View>
+              <MaterialIcons name="chevron-left" size={22} color={colors.muted} />
+            </Pressable>
+            <View style={styles.actions}>
+              <Button small variant="ghost" icon="edit" label={t("تعديل")} onPress={() => setEditing({ id: c.id, name: c.name, name_ar: c.name_ar })} />
+              <Button small variant={c.is_active ? "danger" : "outline"} label={c.is_active ? t("إخفاء") : t("إظهار")} onPress={() => save.mutate({ id: c.id, name: c.name, name_ar: c.name_ar, parent_id: c.parent_id, is_active: !c.is_active })} />
+            </View>
+          </Card>
+        ))}
+      </>
+    );
+  }
+
+function ReportsPanel() {
+    const colors = useColors();
+    const client = useQueryClient();
+    const list = useQuery({ queryKey: ["admin", "reports"], queryFn: data.adminReports });
+    const [notes, setNotes] = useState<Record<string, string>>({});
+    const update = useMutation({ mutationFn: data.adminUpdateReport, onSuccess: () => void client.invalidateQueries({ queryKey: ["admin"] }), onError: (e) => notify(t("تعذر تحديث البلاغ"), data.friendlyError(e)) });
+    if (list.isLoading) return <Loading />;
+    if (list.isError) return <ErrorState message={data.friendlyError(list.error)} />;
+    if (!list.data!.length) return <EmptyState icon="flag" title={t("لا توجد بلاغات")} />;
+    const STATUS = { open: "جديد", reviewing: "قيد المراجعة", resolved: "تم الحل", dismissed: "مرفوض" } as const;
+    return <>{list.data!.map((r) => (
+      <Card key={r.id} style={[styles.item, r.priority === "high" && r.status === "open" ? { borderColor: colors.error } : null]}>
+        <View style={styles.itemHead}>
+          <MaterialIcons name="flag" size={20} color={r.priority === "high" ? colors.error : colors.warning} />
+          <Text style={[styles.itemTitle, { color: colors.foreground, flex: 1 }]}>{t(REASON_LABELS[r.reason] ?? "سبب آخر")}</Text>
+          <Text style={[styles.meta, { color: colors.primary }]}>{t(STATUS[r.status])}</Text>
+        </View>
+        <Text style={[styles.body, { color: colors.foreground }]}>{r.details}</Text>
+        <Text style={[styles.meta, { color: colors.muted }]}>{t("المُبلِّغ: {name}", { name: r.reporterName ?? "—" })} · {timeAgo(r.createdAt)}</Text>
+        {r.listingTitle ? <Pressable onPress={() => router.push({ pathname: "/listing/[id]", params: { id: r.listingId! } })}><Text style={[styles.link, { color: colors.primary }]}>{t("الإعلان: {title}", { title: r.listingTitle })}</Text></Pressable> : null}
+        {r.reportedName ? <Pressable onPress={() => router.push({ pathname: "/seller/[id]", params: { id: r.reportedUserId! } })}><Text style={[styles.link, { color: colors.primary }]}>{t("المستخدم المبلَّغ عنه: {name}", { name: r.reportedName })}</Text></Pressable> : null}
+        {r.conversationId ? <Text style={[styles.meta, { color: colors.muted }]}>{t("البلاغ مرتبط بمحادثة.")}</Text> : null}
+        {r.resolution ? <Text style={[styles.meta, { color: colors.muted }]}>{t("القرار: {text}", { text: r.resolution })}</Text> : null}
+        {r.status === "open" || r.status === "reviewing" ? (
+          <>
+            <Input value={notes[r.id] ?? ""} onChangeText={(v) => setNotes((n) => ({ ...n, [r.id]: v }))} placeholder={t("ملاحظة القرار (مطلوبة للحل أو الرفض)")} style={{ marginTop: 10 }} />
+            <View style={styles.actions}>
+              {r.status === "open" ? <Button small variant="ghost" label={t("بدء المراجعة")} onPress={() => update.mutate({ id: r.id, status: "reviewing" })} /> : null}
+              <Button small icon="check" label={t("تم الحل")} onPress={() => update.mutate({ id: r.id, status: "resolved", resolution: notes[r.id] })} />
+              <Button small variant="danger" label={t("رفض البلاغ")} onPress={() => update.mutate({ id: r.id, status: "dismissed", resolution: notes[r.id] })} />
+            </View>
+          </>
+        ) : null}
+      </Card>
+    ))}</>;
+  }
+
+function AuditPanel() {
+    const colors = useColors();
+    const list = useQuery({ queryKey: ["admin", "audit"], queryFn: data.adminAuditLog });
+    if (list.isLoading) return <Loading />;
+    if (list.isError) return <ErrorState message={data.friendlyError(list.error)} />;
+    if (!list.data!.length) return <EmptyState icon="history" title={t("لا توجد إجراءات مسجلة بعد")} />;
+    const TABLES: Record<string, string> = { listings: "إعلان", stores: "متجر", profiles: "مستخدم", report_cases: "بلاغ", categories: "تصنيف", platform_settings: "إعداد", merchant_subscriptions: "اشتراك" };
+    const ACTIONS: Record<string, string> = { insert: "إضافة", update: "تعديل", delete: "حذف" };
+    return <>{list.data!.map((e) => (
+      <Card key={e.id} style={styles.item}>
+        <Text style={[styles.itemTitle, { color: colors.foreground }]}>{t(ACTIONS[e.action] ?? e.action)} · {t(TABLES[e.table] ?? e.table)}</Text>
+        <Text style={[styles.meta, { color: colors.muted }]}>{e.adminName} · {formatDate(e.createdAt, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</Text>
+        {e.changes.slice(0, 4).map((c) => <Text key={c} style={[styles.code, { color: colors.foreground }]} numberOfLines={2}>{c}</Text>)}
+      </Card>
+    ))}</>;
+  }
+
+function SettingsPanel() {
+    const colors = useColors();
+    const client = useQueryClient();
+    const settings = useQuery({ queryKey: ["admin", "settings"], queryFn: data.adminSettings });
+    const [ar, setAr] = useState<string | null>(null);
+    const [en, setEn] = useState<string | null>(null);
+    const [auto, setAuto] = useState<boolean | null>(null);
+    const save = useMutation({ mutationFn: data.adminSaveSettings, onSuccess: () => { notify(t("تم حفظ الإعدادات")); void client.invalidateQueries({ queryKey: ["admin", "settings"] }); void client.invalidateQueries({ queryKey: ["announcement"] }); }, onError: (e) => notify(t("تعذر حفظ الإعدادات"), data.friendlyError(e)) });
+    if (settings.isLoading) return <Loading />;
+    if (settings.isError) return <ErrorState message={data.friendlyError(settings.error)} />;
+    const s = settings.data!;
+    const vAr = ar ?? s.announcement.ar; const vEn = en ?? s.announcement.en; const vAuto = auto ?? s.autoPublish;
+    return (
+      <Card>
+        <Field label={t("إعلان المنصة بالعربية")} hint={t("يظهر في الرئيسية والإشعارات. اتركه فارغًا لإخفائه.")}><Input value={vAr} onChangeText={setAr} multiline multilineHeight={80} /></Field>
+        <Field label={t("إعلان المنصة بالإنجليزية")}><Input value={vEn} onChangeText={setEn} multiline multilineHeight={80} /></Field>
+        <View style={[styles.itemHead, { marginTop: 18 }]}>
+          <View style={{ flex: 1 }}>
+            <Text style={[styles.itemTitle, { color: colors.foreground }]}>{t("النشر الفوري للإعلانات")}</Text>
+            <Text style={[styles.meta, { color: colors.muted }]}>{vAuto ? t("تُنشر الإعلانات مباشرة بعد الفحص الآلي، ويمكن إيقافها لاحقًا.") : t("كل إعلان جديد ينتظر موافقة المشرف قبل الظهور.")}</Text>
+          </View>
+          <Switch value={vAuto} onValueChange={setAuto} trackColor={{ true: colors.primary, false: colors.border }} />
+        </View>
+        <Button label={t("حفظ الإعدادات")} loading={save.isPending} onPress={() => save.mutate({ announcement: { ar: vAr, en: vEn }, autoPublish: vAuto })} style={{ marginTop: 18 }} />
+      </Card>
+    );
+}
+
+const STATUS_TEXT: Record<data.DbStatus, string> = {
+  draft: "مسودة", pending: "قيد المراجعة", active: "منشور", paused: "موقوف مؤقتًا", rejected: "مرفوض",
+  sold: "تم البيع", reserved: "محجوز", expired: "منتهي", archived: "مؤرشف",
+};
+
+const styles = createStyles({
+  tabs: { flexDirection: "row-reverse", gap: 8, paddingVertical: 10 },
+  content: { paddingBottom: 30 },
+  tiles: { flexDirection: "row-reverse", flexWrap: "wrap", gap: 10 },
+  tile: { borderRadius: 16, borderWidth: 1, minHeight: 92, padding: 14, width: "48%" },
+  tileValue: { fontSize: 26, fontVariant: ["tabular-nums"], fontWeight: "900", textAlign: "right" },
+  tileLabel: { fontSize: 12, marginTop: 4, textAlign: "right" },
+  item: { marginTop: 10 },
+  itemHead: { alignItems: "center", flexDirection: "row-reverse", gap: 10 },
+  thumb: { borderRadius: 10, height: 52, width: 52 },
+  itemTitle: { fontSize: 14, fontWeight: "900", textAlign: "right" },
+  meta: { fontSize: 12, marginTop: 3, textAlign: "right" },
+  body: { fontSize: 13, lineHeight: 20, marginTop: 8, textAlign: "right" },
+  link: { fontSize: 12, fontWeight: "800", marginTop: 6, textAlign: "right" },
+  note: { fontSize: 12, lineHeight: 18, marginBottom: 6, textAlign: "right" },
+  code: { fontFamily: "monospace", fontSize: 11, marginTop: 4, textAlign: "left" },
+  actions: { flexDirection: "row-reverse", flexWrap: "wrap", gap: 6, marginTop: 10 },
+});

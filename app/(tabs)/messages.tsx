@@ -1,29 +1,62 @@
-import { useState } from "react";
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
-import { router, useLocalSearchParams } from "expo-router";
+import { useQuery } from "@tanstack/react-query";
+import { router, useFocusEffect } from "expo-router";
+import { useCallback } from "react";
+import { Image, Pressable, ScrollView, Text, View } from "react-native";
+import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { ScreenContainer } from "@/components/screen-container";
-import { useColors } from "@/hooks/use-colors";
+import { EmptyState, ErrorState, Header, Loading, LoginRequired } from "@/components/market/ui";
 import { useAuth } from "@/hooks/use-auth";
-import { trpc } from "@/lib/trpc";
+import { useColors } from "@/hooks/use-colors";
+import { friendlyError, listConversations } from "@/lib/data";
+import { t, timeAgo } from "@/lib/i18n";
+import { keys } from "@/lib/queries";
+import { createStyles } from "@/lib/i18n/rtl";
 
 export default function MessagesScreen() {
   const colors = useColors();
-  const { isAuthenticated, user } = useAuth();
-  const { conversationPublicId } = useLocalSearchParams<{ conversationPublicId?: string }>();
-  const [selectedId, setSelectedId] = useState<string | undefined>(conversationPublicId);
-  const [body, setBody] = useState("");
-  const utils = trpc.useUtils();
-  const conversations = trpc.chats.list.useQuery(undefined, { enabled: isAuthenticated, retry: false });
-  const messages = trpc.chats.messages.useQuery({ conversationPublicId: selectedId ?? "" }, { enabled: Boolean(selectedId), retry: false });
-  const send = trpc.chats.send.useMutation({ onSuccess: async () => { setBody(""); await utils.chats.messages.invalidate({ conversationPublicId: selectedId ?? "" }); await utils.chats.list.invalidate(); } });
+  const { isAuthenticated, loading } = useAuth();
+  const conversations = useQuery({ queryKey: keys.conversations, queryFn: listConversations, enabled: isAuthenticated, refetchInterval: 20_000 });
+  useFocusEffect(useCallback(() => { if (isAuthenticated) void conversations.refetch(); }, [isAuthenticated])); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const sendMessage = () => {
-    if (!selectedId || !body.trim()) return;
-    send.mutate({ conversationPublicId: selectedId, body: body.trim() });
-  };
-
-  if (!isAuthenticated) return <ScreenContainer className="px-4"><View style={styles.center}><Text style={[styles.title, { color: colors.foreground }]}>دردشاتي</Text><Text style={[styles.muted, { color: colors.muted }]}>سجّل الدخول لبدء محادثة مع متجر أو تاجر.</Text><Pressable onPress={() => router.push("/login")} style={[styles.primaryButton, { backgroundColor: colors.primary }]}><Text style={styles.primaryText}>تسجيل الدخول</Text></Pressable></View></ScreenContainer>;
-
-  return <ScreenContainer className="px-4"><ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled"><View style={styles.header}><Text style={[styles.title, { color: colors.foreground }]}>دردشاتي</Text><Pressable onPress={() => void conversations.refetch()}><Text style={[styles.refresh, { color: colors.primary }]}>تحديث</Text></Pressable></View>{conversations.isLoading && <ActivityIndicator color={colors.primary} style={styles.loader} />}{conversations.isError && <Text style={[styles.muted, { color: colors.error }]}>تعذر تحميل المحادثات.</Text>}{!conversations.isLoading && !conversations.isError && conversations.data?.length === 0 && <View style={[styles.empty, { backgroundColor: colors.surface, borderColor: colors.border }]}><Text style={[styles.emptyTitle, { color: colors.foreground }]}>لا توجد محادثات</Text><Text style={[styles.muted, { color: colors.muted }]}>ابدأ من إعلان منشور في متجر مسقط.</Text></View>}{(conversations.data ?? []).map((chat) => <Pressable key={chat.publicId} onPress={() => setSelectedId(chat.publicId)} style={[styles.chat, { backgroundColor: selectedId === chat.publicId ? colors.primary + "18" : colors.surface, borderColor: colors.border }]}><View style={styles.chatCopy}><Text style={[styles.chatTitle, { color: colors.foreground }]}>محادثة متجر مسقط</Text><Text style={[styles.chatMeta, { color: colors.muted }]}>{chat.status === "active" ? "مفتوحة" : "مغلقة"} · {new Date(chat.updatedAt).toLocaleDateString("ar-OM")}</Text></View><Text style={[styles.open, { color: colors.primary }]}>فتح</Text></Pressable>)}{selectedId && <View style={[styles.thread, { backgroundColor: colors.surface, borderColor: colors.border }]}><Text style={[styles.threadTitle, { color: colors.foreground }]}>المحادثة</Text>{messages.isLoading && <ActivityIndicator color={colors.primary} />}{(messages.data ?? []).map((message) => <View key={message.id} style={[styles.bubble, { backgroundColor: message.senderUserId !== user?.id ? colors.border : colors.primary + "20" }]}><Text style={[styles.bubbleText, { color: colors.foreground }]}>{message.body}</Text></View>)}<View style={styles.composer}><Pressable disabled={send.isPending || !body.trim()} onPress={sendMessage} style={[styles.send, { backgroundColor: body.trim() ? colors.primary : colors.border }]}><Text style={styles.sendText}>إرسال</Text></Pressable><TextInput value={body} onChangeText={setBody} placeholder="اكتب رسالتك" placeholderTextColor={colors.muted} style={[styles.input, { borderColor: colors.border, color: colors.foreground }]} textAlign="right" multiline /></View>{send.error && <Text style={[styles.muted, { color: colors.error }]}>تعذر إرسال الرسالة. تحقق من صلاحيات المحادثة.</Text>}</View>}</ScrollView></ScreenContainer>;
+  return (
+    <ScreenContainer className="px-4">
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.content}>
+        <Header back={false} title={t("الرسائل")} subtitle={t("محادثاتك مع البائعين والمشترين")} />
+        {loading ? <Loading /> : !isAuthenticated ? <LoginRequired text={t("سجّل الدخول لمراسلة البائعين.")} /> : conversations.isLoading ? <Loading /> : conversations.isError ? <ErrorState message={friendlyError(conversations.error)} onRetry={() => conversations.refetch()} /> : (conversations.data ?? []).length === 0 ? (
+          <EmptyState icon="chat-bubble-outline" title={t("لا توجد محادثات بعد")} text={t("افتح أي إعلان واضغط «مراسلة» لبدء محادثة مع البائع.")} />
+        ) : conversations.data!.map((c) => (
+          <Pressable key={c.id} onPress={() => router.push({ pathname: "/chat/[id]", params: { id: c.id } })} style={({ pressed }) => [styles.item, { backgroundColor: colors.surface, borderColor: c.unread ? colors.accent : colors.border, opacity: pressed ? 0.8 : 1 }]}>
+            {c.listingImage ? <Image source={{ uri: c.listingImage }} style={styles.thumb} /> : <View style={[styles.thumb, styles.thumbEmpty, { backgroundColor: colors.accentSoft }]}><MaterialIcons name="person" size={24} color={colors.primary} /></View>}
+            <View style={{ flex: 1 }}>
+              <View style={styles.row}>
+                <Text style={[styles.name, { color: colors.foreground }]} numberOfLines={1}>{c.otherName}</Text>
+                {c.lastAt ? <Text style={[styles.time, { color: colors.muted }]}>{timeAgo(c.lastAt)}</Text> : null}
+              </View>
+              {c.listingTitle ? <Text style={[styles.listing, { color: colors.primary }]} numberOfLines={1}>{c.listingTitle}</Text> : null}
+              <View style={styles.row}>
+                <Text style={[styles.last, { color: c.unread ? colors.foreground : colors.muted, fontWeight: c.unread ? "800" : "400" }]} numberOfLines={1}>{c.lastMessage ?? t("لا توجد رسائل بعد")}</Text>
+                {c.unread ? <View style={[styles.badge, { backgroundColor: colors.accent }]}><Text style={styles.badgeText}>{c.unread}</Text></View> : null}
+              </View>
+              <Text style={[styles.role, { color: colors.muted }]}>{c.iAmSeller ? t("استفسار عن إعلانك") : t("محادثة مع البائع")}</Text>
+            </View>
+          </Pressable>
+        ))}
+      </ScrollView>
+    </ScreenContainer>
+  );
 }
-const styles = StyleSheet.create({ content: { paddingBottom: 35 }, center: { alignItems: "center", flex: 1, gap: 13, justifyContent: "center", padding: 20 }, title: { fontSize: 28, fontWeight: "900", textAlign: "right" }, refresh: { fontSize: 13, fontWeight: "800" }, header: { alignItems: "center", flexDirection: "row-reverse", justifyContent: "space-between", paddingTop: 14 }, muted: { fontSize: 13, lineHeight: 21, textAlign: "center" }, primaryButton: { borderRadius: 12, marginTop: 9, paddingHorizontal: 24, paddingVertical: 12 }, primaryText: { color: "#FFF", fontWeight: "900" }, loader: { marginTop: 30 }, empty: { alignItems: "center", borderRadius: 17, borderWidth: 1, marginTop: 22, padding: 23 }, emptyTitle: { fontSize: 17, fontWeight: "900" }, chat: { alignItems: "center", borderRadius: 15, borderWidth: 1, flexDirection: "row-reverse", marginTop: 11, padding: 14 }, chatCopy: { flex: 1 }, chatTitle: { fontSize: 14, fontWeight: "900", textAlign: "right" }, chatMeta: { fontSize: 11, marginTop: 5, textAlign: "right" }, open: { fontSize: 12, fontWeight: "800" }, thread: { borderRadius: 17, borderWidth: 1, marginTop: 20, padding: 13 }, threadTitle: { fontSize: 17, fontWeight: "900", marginBottom: 10, textAlign: "right" }, bubble: { alignSelf: "flex-end", borderRadius: 13, marginTop: 8, maxWidth: "85%", padding: 10 }, bubbleText: { fontSize: 13, lineHeight: 20, textAlign: "right" }, composer: { alignItems: "flex-end", flexDirection: "row-reverse", gap: 8, marginTop: 15 }, input: { borderRadius: 12, borderWidth: 1, flex: 1, maxHeight: 90, minHeight: 45, paddingHorizontal: 11, paddingVertical: 9 }, send: { alignItems: "center", borderRadius: 11, justifyContent: "center", minHeight: 45, paddingHorizontal: 14 }, sendText: { color: "#FFF", fontSize: 12, fontWeight: "900" } });
+
+const styles = createStyles({
+  content: { paddingBottom: 30 },
+  item: { alignItems: "center", borderRadius: 16, borderWidth: 1, flexDirection: "row-reverse", gap: 12, marginTop: 10, padding: 12 },
+  thumb: { borderRadius: 12, height: 58, width: 58 },
+  thumbEmpty: { alignItems: "center", justifyContent: "center" },
+  row: { alignItems: "center", flexDirection: "row-reverse", gap: 8, justifyContent: "space-between" },
+  name: { flex: 1, fontSize: 15, fontWeight: "900", textAlign: "right" },
+  time: { fontSize: 11 },
+  listing: { fontSize: 12, fontWeight: "700", marginTop: 2, textAlign: "right" },
+  last: { flex: 1, fontSize: 13, marginTop: 3, textAlign: "right" },
+  badge: { alignItems: "center", borderRadius: 10, height: 20, justifyContent: "center", minWidth: 20, paddingHorizontal: 5 },
+  badgeText: { color: "#0B1F17", fontSize: 11, fontWeight: "900" },
+  role: { fontSize: 10, marginTop: 3, textAlign: "right" },
+});

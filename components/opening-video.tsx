@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Animated, StyleSheet } from "react-native";
 import { useEvent } from "expo";
 import { useVideoPlayer, VideoView } from "expo-video";
+import { createStyles } from "@/lib/i18n/rtl";
 
 /**
  * Launch intro: the 6-second Muscat video plays over the app once per launch,
@@ -66,7 +67,7 @@ export function OpeningVideo() {
   );
 }
 
-const styles = StyleSheet.create({
+const styles = createStyles({
   // Matches the video's first frame so there is no flash before it starts.
   overlay: { ...StyleSheet.absoluteFillObject, backgroundColor: "#000305", zIndex: 1000 },
   // Explicit size: on the web absoluteFill alone leaves the <video> at its natural 360×534.

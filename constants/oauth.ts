@@ -2,6 +2,7 @@ import * as Linking from "expo-linking";
 import { Platform } from "react-native";
 import * as WebBrowser from "expo-web-browser";
 import { supabase } from "@/lib/supabase";
+import { t } from "@/lib/i18n";
 
 export const APP_SCHEME = "daralsila";
 
@@ -36,18 +37,18 @@ async function startProviderLogin(provider: "facebook" | "google", cancelMessage
     return;
   }
   const { data, error } = await supabase.auth.signInWithOAuth({ provider, options: { redirectTo, skipBrowserRedirect: true } });
-  if (error || !data.url) throw new Error(error?.message ?? "تعذر بدء تسجيل الدخول.");
+  if (error || !data.url) throw new Error(error?.message ?? t("تعذر بدء تسجيل الدخول."));
   const result = await WebBrowser.openAuthSessionAsync(data.url, redirectTo);
   if (result.type !== "success") throw new Error(cancelMessage);
   await completeOAuthFromUrl(result.url);
 }
 
 export function startFacebookLogin(): Promise<void> {
-  return startProviderLogin("facebook", "تم إلغاء تسجيل الدخول عبر Facebook.");
+  return startProviderLogin("facebook", t("تم إلغاء تسجيل الدخول عبر Facebook."));
 }
 
 export function startGoogleLogin(): Promise<void> {
-  return startProviderLogin("google", "تم إلغاء تسجيل الدخول عبر Google.");
+  return startProviderLogin("google", t("تم إلغاء تسجيل الدخول عبر Google."));
 }
 
 export function isDarAlSilaAuthUrl(url: string): boolean {

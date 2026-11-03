@@ -4,6 +4,7 @@ import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { SymbolWeight, SymbolViewProps } from "expo-symbols";
 import { ComponentProps } from "react";
 import { OpaqueColorValue, type StyleProp, type TextStyle } from "react-native";
+import { isRTL } from "@/lib/i18n";
 
 type IconMapping = Record<SymbolViewProps["name"], ComponentProps<typeof MaterialIcons>["name"]>;
 type IconSymbolName = keyof typeof MAPPING;
@@ -79,6 +80,11 @@ const MAPPING = {
   "eye.fill": "visibility",
 } as IconMapping;
 
+const MIRRORED: Partial<Record<IconSymbolName, IconSymbolName>> = {
+  "chevron.left": "chevron.right",
+  "chevron.right": "chevron.left",
+};
+
 /**
  * An icon component that uses native SF Symbols on iOS, and Material Icons on Android and web.
  * This ensures a consistent look across platforms, and optimal resource usage.
@@ -96,5 +102,7 @@ export function IconSymbol({
   style?: StyleProp<TextStyle>;
   weight?: SymbolWeight;
 }) {
-  return <MaterialIcons color={color} size={size} name={MAPPING[name]} style={style} />;
+  // Directional icons were chosen for the Arabic (RTL) layout; mirror them in English.
+  const resolved = isRTL() ? name : (MIRRORED[name] ?? name);
+  return <MaterialIcons color={color} size={size} name={MAPPING[resolved]} style={style} />;
 }

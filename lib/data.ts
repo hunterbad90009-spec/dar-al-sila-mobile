@@ -1,23 +1,19 @@
 /**
  * Supabase data layer for دار السلع.
  *
- * Replaces the original Manus tRPC server + MySQL. Every function here keeps the
- * same name/input/output shape as the old tRPC procedure so the screens stay unchanged.
- *
- * Security: all access goes through Row Level Security with the user's own session.
- * Features that rely on tables not yet created in Supabase (stores, chats, reports,
- * notifications, views, ratings, follows) fail gracefully with a clear Arabic message
- * until supabase/migrations/0001_mobile_features.sql is approved and applied.
+ * Every read and write runs with the signed-in user's session and is checked by Row Level
+ * Security in the database (supabase/migrations). Hiding a button is never the only guard.
+ * Error messages are Arabic source strings passed through t().
  */
 import { LISTING_MEDIA_BUCKET, supabase } from "@/lib/supabase";
 import { isSupportedImageDataUrl } from "@/lib/image-moderation";
 import { getMarketplacePermissions } from "@/shared/marketplace-permissions";
+import { formatPrice, pickName, t } from "@/lib/i18n";
+import type { Condition } from "@/lib/category-fields";
 
 // ---------------------------------------------------------------------------
 // Errors & helpers
 // ---------------------------------------------------------------------------
-
-export const FEATURE_NOT_READY = "هذه الميزة تحتاج تفعيل جداولها في قاعدة البيانات أولًا.";
 
 type PgError = { code?: string; message?: string } | null;
 
@@ -25,16 +21,37 @@ function isMissingTable(error: PgError) {
   return Boolean(error && (error.code === "PGRST205" || error.code === "42P01" || error.code === "PGRST204" || error.code === "42703"));
 }
 
-function fail(error: PgError, fallback = "تعذر إكمال الطلب."): never {
-  if (isMissingTable(error)) throw new Error(FEATURE_NOT_READY);
-  throw new Error(error?.message || fallback);
+/** Turn database / RLS errors into a safe, translated message (never raw SQL). */
+export function friendlyError(error: unknown, fallback = "تعذر إكمال الطلب."): string {
+  const message = error instanceof Error ? error.message : typeof (error as PgError)?.message === "string" ? (error as PgError)!.message! : "";
+  const known: Record<string, string> = {
+    LISTING_STATUS_LOCKED: "لا يمكن تغيير حالة هذا الإعلان قبل مراجعة المشرف.",
+    LISTING_STATUS_ADMIN_ONLY: "هذا الإجراء للمشرف فقط.",
+    STORE_FIELD_ADMIN_ONLY: "تفعيل المتجر وتمييزه من صلاحيات المشرف.",
+    ROLE_CHANGE_FORBIDDEN: "لا تملك صلاحية تغيير الأدوار.",
+    MESSAGE_IMMUTABLE: "لا يمكن تعديل الرسائل بعد إرسالها.",
+    LISTING_NOT_FOUND: "تعذر العثور على الإعلان.",
+    STORE_NOT_FOUND: "المتجر غير موجود أو غير مفعّل.",
+    DRAFT_NOT_EDITABLE: "تم تحديث هذا الإعلان من مكان آخر. افتحه من جديد.",
+    INVALID_IMAGE_BYTES: "صيغة الصورة غير مدعومة.",
+    MEDIA_SIZE_INVALID: "حجم الصورة كبير جدًا.",
+    LOGIN_REQUIRED: "يجب تسجيل الدخول أولًا.",
+  };
+  for (const [code, text] of Object.entries(known)) if (message.includes(code)) return t(text);
+  if (/row-level security|permission denied|violates row-level/i.test(message)) return t("لا تملك صلاحية لهذا الإجراء.");
+  if (/Failed to fetch|Network|fetch failed|ERR_/i.test(message)) return t("تعذر الاتصال. تحقق من الإنترنت وحاول مرة أخرى.");
+  if (message && /[؀-ۿ]/.test(message)) return message;
+  return t(fallback);
 }
 
-/** For list queries: a missing table yields an empty list instead of a broken screen. */
+function fail(error: PgError, fallback = "تعذر إكمال الطلب."): never {
+  throw new Error(isMissingTable(error) ? t("هذه الميزة غير متاحة حاليًا.") : (error?.message || t(fallback)));
+}
+
 function rowsOrEmpty<T>(data: T[] | null, error: PgError): T[] {
   if (error) {
     if (isMissingTable(error)) return [];
-    throw new Error(error.message || "تعذر تحميل البيانات.");
+    throw new Error(error.message || t("تعذر تحميل البيانات."));
   }
   return data ?? [];
 }
@@ -44,238 +61,507 @@ function conflict(message: string): never {
   throw Object.assign(new Error(message), { data: { code: "CONFLICT" } });
 }
 
-async function requireUserId(): Promise<string> {
+export async function currentUserId(): Promise<string | null> {
   const { data } = await supabase.auth.getSession();
-  const id = data.session?.user.id;
-  if (!id) throw new Error("يجب تسجيل الدخول أولًا.");
+  return data.session?.user.id ?? null;
+}
+
+async function requireUserId(): Promise<string> {
+  const id = await currentUserId();
+  if (!id) throw new Error("LOGIN_REQUIRED");
   return id;
 }
 
+/** Escape user text for a PostgREST `or=(...)` / ilike filter. */
+function likeTerm(value: string) {
+  return `%${value.replace(/[%_\\]/g, (c) => `\\${c}`).replace(/[,()]/g, " ").trim()}%`;
+}
+
 // ---------------------------------------------------------------------------
-// Category & location mapping (UI uses Arabic labels; DB uses ids)
+// Taxonomy (categories & locations) — bilingual rows from the database
 // ---------------------------------------------------------------------------
 
-/** UI label → category slug in Supabase. */
-const LABEL_TO_SLUG: Record<string, string> = {
-  "سيارات": "cars", "سيارات ومركبات": "cars", "السيارات": "cars",
-  "عقارات": "real-estate", "عقارات للبيع": "real-estate", "عقارات للإيجار": "real-estate", "العقارات": "real-estate",
-  "إلكترونيات": "electronics", "الإلكترونيات": "electronics", "أجهزة إلكترونية وأجهزة منزلية": "electronics",
-  "ألعاب": "gaming", "ألعاب وألعاب الفيديو": "gaming",
-  "منزل وحدائق": "furniture",
-  "أزياء": "fashion", "موضة وأطفال": "fashion",
-  "الخدمات": "services", "خدمات": "services",
-  "وظائف": "jobs", "الوظائف": "jobs",
-  "حيوانات وإكسسوارات": "pets",
-  "ترفيه وكتب ومقتنيات": "old-books-education",
-  "معدات رياضية ولياقة": "sports-fitness",
-  "تجهيزات ومعدات الشركات": "business-supplies",
-  "جمال وصحة": "other", "طعام - غذاء": "other", "غير محدد": "other",
-};
+export type Category = { id: number; slug: string; name: string; name_ar: string; icon: string | null; parent_id: number | null; sort_order: number };
+export type Location = { id: number; name: string; name_ar: string; kind: "governorate" | "wilayat" | null; parent_id: number | null; latitude: number | null; longitude: number | null };
 
-/** Category slug → the short label the home screen chips filter on. */
-const SLUG_TO_LABEL: Record<string, string> = {
-  cars: "سيارات", "real-estate": "عقارات", electronics: "إلكترونيات", "mobiles-tablets": "إلكترونيات", computers: "إلكترونيات",
-  gaming: "ألعاب", furniture: "منزل وحدائق", fashion: "أزياء", services: "الخدمات", jobs: "وظائف",
-};
+let categoryCache: Promise<Category[]> | null = null;
+let locationCache: Promise<Location[]> | null = null;
 
-type CategoryRow = { id: number; slug: string; name_ar: string; parent_id: number | null };
-type LocationRow = { id: number; name_ar: string; kind: string | null; parent_id: number | null };
-
-let categoryCache: Promise<CategoryRow[]> | null = null;
-let locationCache: Promise<LocationRow[]> | null = null;
-
-function loadCategories() {
+export function getCategories(): Promise<Category[]> {
   categoryCache ??= (async () => {
-    const { data, error } = await supabase.from("categories").select("id, slug, name_ar, parent_id");
-    if (error) { categoryCache = null; return []; }
-    return (data ?? []) as CategoryRow[];
+    const { data, error } = await supabase.from("categories").select("id, slug, name, name_ar, icon, parent_id, sort_order").eq("is_active", true).order("sort_order").order("id");
+    if (error) { categoryCache = null; throw new Error(error.message); }
+    return (data ?? []) as Category[];
   })();
   return categoryCache;
 }
 
-function loadLocations() {
+export function invalidateCategoryCache() {
+  categoryCache = null;
+}
+
+export function getLocations(): Promise<Location[]> {
   locationCache ??= (async () => {
-    const { data, error } = await supabase.from("locations").select("id, name_ar, kind, parent_id");
-    if (error) { locationCache = null; return []; }
-    return (data ?? []) as LocationRow[];
+    const { data, error } = await supabase.from("locations").select("id, name, name_ar, kind, parent_id, latitude, longitude").eq("is_active", true).order("id");
+    if (error) { locationCache = null; throw new Error(error.message); }
+    return (data ?? []) as Location[];
   })();
   return locationCache;
 }
 
-const normalizeAr = (value: string) => value.trim().replace(/[أإآ]/g, "ا").replace(/ة/g, "ه").replace(/ى/g, "ي");
-
-async function categoryIdFor(label?: string | null): Promise<number | null> {
-  if (!label?.trim()) return null;
-  const rows = await loadCategories();
-  const exact = rows.find((row) => normalizeAr(row.name_ar) === normalizeAr(label));
-  if (exact) return exact.parent_id ?? exact.id;
-  const slug = LABEL_TO_SLUG[label.trim()] ?? "other";
-  return rows.find((row) => row.slug === slug)?.id ?? rows.find((row) => row.slug === "other")?.id ?? null;
+/** Walk up to the top-level category. */
+export function topCategory(categories: Category[], id: number | null | undefined): Category | undefined {
+  let node = categories.find((c) => c.id === id);
+  while (node?.parent_id) node = categories.find((c) => c.id === node!.parent_id);
+  return node;
 }
 
-async function locationIdFor(label?: string | null): Promise<number | null> {
-  if (!label?.trim()) return null;
-  const rows = await loadLocations();
-  const parts = label.split(/[،,\-–]/).map((part) => part.trim()).filter(Boolean);
-  for (const part of parts) {
-    const wilayat = rows.find((row) => row.kind === "wilayat" && normalizeAr(row.name_ar) === normalizeAr(part));
-    if (wilayat) return wilayat.id;
-  }
-  for (const part of parts) {
-    const any = rows.find((row) => normalizeAr(row.name_ar) === normalizeAr(part));
-    if (any) return any.id;
-  }
-  return null;
+export function descendantIds(categories: Category[], id: number): number[] {
+  const out: number[] = [id];
+  for (let i = 0; i < out.length; i += 1) for (const c of categories) if (c.parent_id === out[i]) out.push(c.id);
+  return out;
 }
 
-/** Split typed price text ("250", "250 ر.ع", "على السوم") into numeric + original text. */
-function parsePrice(text?: string | null): { price: number | null; priceText: string | null } {
-  const trimmed = text?.trim() ?? "";
-  if (!trimmed) return { price: null, priceText: null };
-  const western = trimmed.replace(/[٠-٩]/g, (d) => String("٠١٢٣٤٥٦٧٨٩".indexOf(d))).replace(/[٫,]/g, ".");
-  const match = /\d+(\.\d+)?/.exec(western);
-  return { price: match ? Number(match[0]) : null, priceText: trimmed };
+function locationIdsWithin(locations: Location[], id: number): number[] {
+  return [id, ...locations.filter((l) => l.parent_id === id).map((l) => l.id)];
+}
+
+export function locationLabel(locations: Location[], id: number | null | undefined): string | null {
+  const loc = locations.find((l) => l.id === id);
+  if (!loc) return null;
+  const parent = locations.find((l) => l.id === loc.parent_id);
+  const strip = (s: string) => s.replace(/^محافظة\s+/, "").replace(/\s+Governorate$/, "");
+  return parent ? `${pickName(loc)}، ${strip(pickName(parent))}` : strip(pickName(loc));
 }
 
 // ---------------------------------------------------------------------------
-// Listing row mapping (Supabase → shape the screens expect)
+// Listings
 // ---------------------------------------------------------------------------
 
-export type ListingStatus = "draft" | "pending" | "published" | "rejected" | "suspended";
-
-/** Supabase listing status → original app vocabulary. */
-function toUiStatus(status: string | null | undefined, attributes: Record<string, unknown>): ListingStatus {
-  if (status === "draft") return "draft";
-  if (status === "archived") return attributes.moderation_status === "rejected" ? "rejected" : "suspended";
-  return "published";
-}
+/** Raw database statuses. UI labels live in components/market (statusLabel). */
+export type DbStatus = "draft" | "pending" | "active" | "paused" | "rejected" | "sold" | "reserved" | "expired" | "archived";
 
 const LISTING_SELECT =
-  "id, user_id, title, description, price, currency, status, phone, created_at, updated_at, attributes, category_id, location_id," +
-  " category:categories!listings_category_id_fkey(slug, name_ar)," +
-  " location:locations!listings_location_id_fkey(name_ar)," +
-  " seller:profiles!listings_user_id_fkey(full_name, username)," +
+  "id, user_id, title, description, price, currency, status, condition, phone, whatsapp, views_count, is_featured, created_at, updated_at, attributes, category_id, subcategory_id, location_id," +
+  " seller:profiles!listings_user_id_fkey(id, full_name, username, avatar_url, created_at)," +
   " media:listing_media(id, media_url, sort_order)";
 
 type RawListing = {
-  id: string;
-  user_id: string;
-  title: string | null;
-  description: string | null;
-  price: number | string | null;
-  currency: string | null;
-  status: string;
-  phone: string | null;
-  created_at: string;
-  updated_at: string;
-  attributes: Record<string, unknown> | null;
-  category_id: number | null;
-  location_id: number | null;
-  category: { slug: string; name_ar: string } | null;
-  location: { name_ar: string } | null;
-  seller: { full_name: string | null; username: string | null } | null;
+  id: string; user_id: string; title: string | null; description: string | null; price: number | string | null; currency: string | null;
+  status: DbStatus; condition: Condition | null; phone: string | null; whatsapp: string | null; views_count: number | null; is_featured: boolean | null;
+  created_at: string; updated_at: string; attributes: Record<string, unknown> | null;
+  category_id: number | null; subcategory_id: number | null; location_id: number | null;
+  seller: { id: string; full_name: string | null; username: string | null; avatar_url: string | null; created_at: string } | null;
   media: { id: string; media_url: string; sort_order: number }[] | null;
 };
 
-export type ListingRow = {
+export type Listing = {
   id: string;
-  publicId: string;
-  sellerId: string;
-  title: string | null;
-  description: string | null;
-  category: string | null;
-  price: string | null;
-  location: string | null;
-  phone: string | null;
-  status: ListingStatus;
-  moderationReason: string | null;
-  createdAt: Date;
-  updatedAt: Date;
-  publishedAt: Date | null;
-  version: number;
-};
-
-export type PublicListing = {
-  id: string;
+  /** Same as id; kept for screens written against the original API. */
   publicId: string;
   sellerId: string;
   sellerName: string;
+  sellerAvatar: string | null;
+  sellerSince: string | null;
   title: string;
   description: string;
-  category: string;
+  priceValue: number | null;
+  /** Display price in the active language, or the seller's own text (e.g. "على السوم"). */
   price: string;
-  location: string;
+  status: DbStatus;
+  condition: Condition | null;
   phone: string | null;
-  publishedAt: unknown;
+  whatsapp: string | null;
+  views: number;
+  isFeatured: boolean;
+  createdAt: string;
+  updatedAt: string;
+  categoryId: number | null;
+  subcategoryId: number | null;
+  locationId: number | null;
+  attributes: Record<string, unknown>;
+  images: { id: string; url: string }[];
   imageUrl: string | null;
-  imageMimeType: string | null;
-  images: string[];
+  moderationReason: string | null;
+  version: number;
 };
 
-function priceLabel(row: RawListing): string | null {
+function toListing(row: RawListing): Listing {
   const attrs = row.attributes ?? {};
-  if (typeof attrs.price_text === "string" && attrs.price_text.trim()) return attrs.price_text;
-  if (row.price === null || row.price === undefined || row.price === "") return null;
-  return `${Number(row.price).toLocaleString("en-US", { maximumFractionDigits: 3 })} ر.ع.`;
-}
-
-function categoryLabel(row: RawListing): string | null {
-  const attrs = row.attributes ?? {};
-  if (row.category?.slug && SLUG_TO_LABEL[row.category.slug]) return SLUG_TO_LABEL[row.category.slug];
-  if (typeof attrs.category_label === "string") return attrs.category_label;
-  return row.category?.name_ar ?? null;
-}
-
-function locationLabel(row: RawListing): string | null {
-  const attrs = row.attributes ?? {};
-  if (typeof attrs.location_label === "string" && attrs.location_label.trim()) return attrs.location_label;
-  return row.location?.name_ar ?? null;
-}
-
-function toListingRow(row: RawListing): ListingRow {
-  const attrs = row.attributes ?? {};
-  const status = toUiStatus(row.status, attrs);
+  const images = [...(row.media ?? [])].sort((a, b) => a.sort_order - b.sort_order).map((m) => ({ id: m.id, url: m.media_url }));
+  const priceValue = row.price === null || row.price === "" ? null : Number(row.price);
+  const priceText = typeof attrs.price_text === "string" && attrs.price_text.trim() && Number.isNaN(Number(attrs.price_text.replace(/[^\d.]/g, "") || "x")) ? attrs.price_text : null;
   return {
     id: row.id,
     publicId: row.id,
     sellerId: row.user_id,
-    title: row.title,
-    description: row.description,
-    category: categoryLabel(row),
-    price: priceLabel(row),
-    location: locationLabel(row),
+    sellerName: row.seller?.full_name || row.seller?.username || t("معلن دار السلع"),
+    sellerAvatar: row.seller?.avatar_url ?? null,
+    sellerSince: row.seller?.created_at ?? null,
+    title: row.title?.trim() || t("إعلان بدون عنوان"),
+    description: row.description ?? "",
+    priceValue,
+    price: priceText ?? formatPrice(priceValue) ?? t("السعر عند التواصل"),
+    status: row.status,
+    condition: row.condition,
     phone: row.phone,
-    status,
+    whatsapp: row.whatsapp,
+    views: row.views_count ?? 0,
+    isFeatured: Boolean(row.is_featured),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    categoryId: row.category_id,
+    subcategoryId: row.subcategory_id,
+    locationId: row.location_id,
+    attributes: attrs,
+    images,
+    imageUrl: images[0]?.url ?? null,
     moderationReason: typeof attrs.moderation_reason === "string" ? attrs.moderation_reason : null,
-    createdAt: new Date(row.created_at),
-    updatedAt: new Date(row.updated_at),
-    publishedAt: status === "published" ? new Date(row.created_at) : null,
     version: typeof attrs.version === "number" ? attrs.version : 1,
   };
 }
 
-function toPublicListing(row: RawListing): PublicListing {
-  const images = [...(row.media ?? [])].sort((a, b) => a.sort_order - b.sort_order).map((item) => item.media_url);
+const toListings = (rows: unknown) => ((rows ?? []) as RawListing[]).map(toListing);
+
+export type SortKey = "relevance" | "newest" | "oldest" | "price_asc" | "price_desc" | "popular";
+
+export type ListingFilters = {
+  q?: string;
+  categoryId?: number | null;
+  locationId?: number | null;
+  minPrice?: number | null;
+  maxPrice?: number | null;
+  condition?: Condition | null;
+  sellerId?: string | null;
+  featured?: boolean;
+  attrs?: Record<string, string>;
+  sort?: SortKey;
+  page?: number;
+  pageSize?: number;
+  excludeId?: string;
+};
+
+export const PAGE_SIZE = 20;
+
+/** Server-side search, filters, sorting and pagination over active listings (spec 4.3). */
+export async function searchListings(filters: ListingFilters = {}): Promise<{ items: Listing[]; hasMore: boolean }> {
+  const pageSize = filters.pageSize ?? PAGE_SIZE;
+  const page = filters.page ?? 0;
+  let query = supabase.from("listings").select(LISTING_SELECT).eq("status", "active");
+
+  if (filters.categoryId) {
+    const categories = await getCategories();
+    const node = categories.find((c) => c.id === filters.categoryId);
+    if (node && !node.parent_id) query = query.eq("category_id", node.id);
+    else query = query.in("subcategory_id", descendantIds(categories, filters.categoryId));
+  }
+  if (filters.locationId) {
+    const locations = await getLocations();
+    query = query.in("location_id", locationIdsWithin(locations, filters.locationId));
+  }
+  if (filters.minPrice != null) query = query.gte("price", filters.minPrice);
+  if (filters.maxPrice != null) query = query.lte("price", filters.maxPrice);
+  if (filters.condition) query = query.eq("condition", filters.condition);
+  if (filters.sellerId) query = query.eq("user_id", filters.sellerId);
+  if (filters.featured) query = query.eq("is_featured", true);
+  if (filters.excludeId) query = query.neq("id", filters.excludeId);
+  for (const [key, value] of Object.entries(filters.attrs ?? {})) {
+    if (value && /^[a-z_]{2,30}$/.test(key)) query = query.ilike(`attributes->>${key}`, likeTerm(value));
+  }
+  const q = filters.q?.trim();
+  if (q) {
+    const term = likeTerm(q);
+    query = query.or(`title.ilike.${term},description.ilike.${term}`);
+  }
+
+  switch (filters.sort ?? (q ? "relevance" : "newest")) {
+    case "oldest": query = query.order("created_at", { ascending: true }); break;
+    case "price_asc": query = query.order("price", { ascending: true, nullsFirst: false }).order("created_at", { ascending: false }); break;
+    case "price_desc": query = query.order("price", { ascending: false, nullsFirst: false }).order("created_at", { ascending: false }); break;
+    case "relevance": query = query.order("is_featured", { ascending: false }).order("created_at", { ascending: false }); break;
+    case "popular": query = query.order("views_count", { ascending: false }).order("created_at", { ascending: false }); break;
+    default: query = query.order("created_at", { ascending: false });
+  }
+
+  const from = page * pageSize;
+  const { data, error } = await query.range(from, from + pageSize);
+  if (error) throw new Error(error.message);
+  const rows = toListings(data);
+  return { items: rows.slice(0, pageSize), hasMore: rows.length > pageSize };
+}
+
+/** Backwards-compatible list used by older screens. */
+export async function listPublicListings(input?: { limit?: number }): Promise<Listing[]> {
+  return (await searchListings({ pageSize: Math.max(1, Math.min(input?.limit ?? 30, 100)) })).items;
+}
+
+/** Public listing; the owner (and admins, through RLS) also see their non-active listings. */
+export async function getListing(input: { publicId: string }): Promise<Listing> {
+  const { data, error } = await supabase.from("listings").select(LISTING_SELECT).eq("id", input.publicId).maybeSingle();
+  if (error) throw new Error(error.message);
+  if (!data) throw new Error("LISTING_NOT_FOUND");
+  return toListing(data as unknown as RawListing);
+}
+export const getPublicListing = getListing;
+
+export async function getRelatedListings(listing: Listing): Promise<Listing[]> {
+  const categoryId = listing.subcategoryId ?? listing.categoryId;
+  if (!categoryId) return [];
+  return (await searchListings({ categoryId, excludeId: listing.id, pageSize: 8 })).items;
+}
+
+export async function getMyListings(): Promise<Listing[]> {
+  const userId = await requireUserId();
+  const { data, error } = await supabase.from("listings").select(LISTING_SELECT).eq("user_id", userId).order("updated_at", { ascending: false }).limit(200);
+  if (error) throw new Error(error.message);
+  return toListings(data);
+}
+
+export type ListingInput = {
+  id?: string | null;
+  categoryId: number | null;
+  subcategoryId: number | null;
+  title: string;
+  description: string;
+  price: string;
+  condition: Condition | null;
+  locationId: number | null;
+  phone: string;
+  whatsapp?: string;
+  attributes: Record<string, string>;
+};
+
+function parsePrice(text: string): number | null {
+  const western = text.trim().replace(/[٠-٩]/g, (d) => String("٠١٢٣٤٥٦٧٨٩".indexOf(d))).replace(/[٬,\s]/g, "").replace(/٫/g, ".");
+  const match = /\d+(\.\d+)?/.exec(western);
+  return match ? Number(match[0]) : null;
+}
+
+/** Validate a listing before saving. Returns translated messages, empty when valid. */
+export function validateListing(input: ListingInput, options: { requireAll: boolean; fieldsRequired?: { key: string; label: string }[] }): string[] {
+  const errors: string[] = [];
+  if (!input.categoryId) errors.push(t("اختر التصنيف."));
+  if (input.title.trim().length < 3) errors.push(t("العنوان قصير جدًا (3 أحرف على الأقل)."));
+  if (input.title.trim().length > 140) errors.push(t("العنوان طويل جدًا (140 حرفًا كحد أقصى)."));
+  if (!options.requireAll) return errors;
+  if (input.description.trim().length < 10) errors.push(t("الوصف قصير جدًا (10 أحرف على الأقل)."));
+  if (input.price.trim() && parsePrice(input.price) === null) errors.push(t("اكتب السعر بالأرقام."));
+  if (!input.locationId) errors.push(t("اختر الموقع."));
+  if (!/^[+\d\s٠-٩-]{8,20}$/.test(input.phone.trim())) errors.push(t("رقم الهاتف غير صحيح."));
+  for (const field of options.fieldsRequired ?? []) if (!String(input.attributes[field.key] ?? "").trim()) errors.push(t("أكمل حقل: {field}", { field: t(field.label) }));
+  return errors;
+}
+
+function listingColumns(input: ListingInput, existingAttributes: Record<string, unknown> = {}) {
+  const cleanAttrs: Record<string, unknown> = { ...existingAttributes };
+  for (const [key, value] of Object.entries(input.attributes)) {
+    if (/^[a-z_]{2,30}$/.test(key)) cleanAttrs[key] = typeof value === "string" ? value.trim().slice(0, 120) : value;
+  }
+  delete cleanAttrs.price_text;
   return {
-    id: row.id,
-    publicId: row.id,
-    sellerId: row.user_id,
-    sellerName: row.seller?.full_name || row.seller?.username || "معلن دار السلع",
-    title: row.title?.trim() || "إعلان بدون عنوان",
-    description: row.description ?? "",
-    category: categoryLabel(row) ?? "غير محدد",
-    price: priceLabel(row) ?? "السعر عند التواصل",
-    location: locationLabel(row) ?? "مسقط",
-    phone: row.phone,
-    publishedAt: row.created_at,
-    imageUrl: images[0] ?? null,
-    imageMimeType: images[0] ? "image/jpeg" : null,
-    images,
+    category_id: input.categoryId,
+    subcategory_id: input.subcategoryId,
+    title: input.title.trim().slice(0, 140) || t("مسودة إعلان"),
+    description: input.description.trim().slice(0, 4000) || null,
+    price: input.price.trim() ? parsePrice(input.price) : null,
+    condition: input.condition,
+    location_id: input.locationId,
+    phone: input.phone.trim() || null,
+    whatsapp: input.whatsapp?.trim() || null,
+    attributes: cleanAttrs,
   };
 }
 
+async function autoPublish(): Promise<boolean> {
+  const { data } = await supabase.from("platform_settings").select("value").eq("key", "listing_auto_publish").maybeSingle();
+  return data?.value !== false;
+}
+
+/** Create or update the user's own listing. `publish` submits it (active or pending per platform rules). */
+export async function saveListing(input: ListingInput, publish: boolean): Promise<Listing> {
+  const userId = await requireUserId();
+  let existing: { status: DbStatus; attributes: Record<string, unknown> | null } | null = null;
+  if (input.id) {
+    const { data, error } = await supabase.from("listings").select("status, attributes, user_id").eq("id", input.id).maybeSingle();
+    if (error) fail(error);
+    if (!data || data.user_id !== userId) throw new Error("LISTING_NOT_FOUND");
+    existing = data as { status: DbStatus; attributes: Record<string, unknown> | null };
+  }
+  const columns = listingColumns(input, existing?.attributes ?? {});
+  const version = (typeof existing?.attributes?.version === "number" ? existing.attributes.version : 0) + 1;
+  (columns.attributes as Record<string, unknown>).version = version;
+
+  let status: DbStatus = existing?.status ?? "draft";
+  if (publish && (status === "draft" || !existing)) status = (await autoPublish()) ? "active" : "pending";
+
+  if (existing && input.id) {
+    const { data, error } = await supabase.from("listings").update({ ...columns, status }).eq("id", input.id).eq("user_id", userId).select(LISTING_SELECT).single();
+    if (error) fail(error, "تعذر حفظ الإعلان.");
+    return toListing(data as unknown as RawListing);
+  }
+  const { data, error } = await supabase.from("listings").insert({ ...columns, status, user_id: userId }).select(LISTING_SELECT).single();
+  if (error) fail(error, "تعذر حفظ الإعلان.");
+  return toListing(data as unknown as RawListing);
+}
+
+/** Owner actions: pause, reactivate, mark sold, move back to draft. */
+export async function setListingStatus(input: { id: string; status: "active" | "paused" | "sold" | "draft" }) {
+  const userId = await requireUserId();
+  const { error, count } = await supabase.from("listings").update({ status: input.status }, { count: "exact" }).eq("id", input.id).eq("user_id", userId);
+  if (error) fail(error);
+  if (!count) throw new Error("LISTING_NOT_FOUND");
+  return { success: true } as const;
+}
+
+export async function deleteListing(input: { id: string }) {
+  const userId = await requireUserId();
+  const { data: media } = await supabase.from("listing_media").select("media_url").eq("listing_id", input.id);
+  await supabase.from("listing_media").delete().eq("listing_id", input.id);
+  await supabase.from("favorites").delete().eq("listing_id", input.id);
+  const { error, count } = await supabase.from("listings").delete({ count: "exact" }).eq("id", input.id).eq("user_id", userId);
+  if (error) fail(error, "تعذر حذف الإعلان.");
+  if (!count) throw new Error("LISTING_NOT_FOUND");
+  await removeStorageFiles((media ?? []).map((m) => m.media_url as string));
+  return { success: true } as const;
+}
+
 // ---------------------------------------------------------------------------
-// Auth & account
+// Media (Supabase Storage bucket "listing-media"; first folder = user id, enforced by policy)
+// ---------------------------------------------------------------------------
+
+function storagePathFromUrl(url: string): string | null {
+  const marker = `/object/public/${LISTING_MEDIA_BUCKET}/`;
+  const index = url.indexOf(marker);
+  return index >= 0 ? decodeURIComponent(url.slice(index + marker.length)) : null;
+}
+
+async function removeStorageFiles(urls: string[]) {
+  const paths = urls.map(storagePathFromUrl).filter((p): p is string => Boolean(p));
+  if (paths.length) await supabase.storage.from(LISTING_MEDIA_BUCKET).remove(paths);
+}
+
+function dataUrlToBytes(dataUrl: string) {
+  const match = /^data:image\/(jpeg|jpg|png|webp);base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl);
+  if (!match) throw new Error("INVALID_IMAGE_BYTES");
+  const extension = match[1] === "jpg" ? "jpeg" : match[1];
+  const binary = globalThis.atob(match[2]);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return { bytes, mimeType: `image/${extension}`, extension };
+}
+
+/** Validates type, magic bytes and size, then uploads into the user's own folder. */
+export async function uploadImage(dataUrl: string, folder: string): Promise<string> {
+  const userId = await requireUserId();
+  if (!isSupportedImageDataUrl(dataUrl)) throw new Error("INVALID_IMAGE_BYTES");
+  const { bytes, mimeType, extension } = dataUrlToBytes(dataUrl);
+  if (bytes.length === 0 || bytes.length > 1_500_000) throw new Error("MEDIA_SIZE_INVALID");
+  const safeFolder = folder.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 60) || "misc";
+  const path = `${userId}/${safeFolder}/${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.${extension}`;
+  const { error } = await supabase.storage.from(LISTING_MEDIA_BUCKET).upload(path, bytes, { contentType: mimeType, upsert: false });
+  if (error) throw new Error(error.message);
+  return supabase.storage.from(LISTING_MEDIA_BUCKET).getPublicUrl(path).data.publicUrl;
+}
+
+export async function addListingImage(listingId: string, dataUrl: string, sortOrder: number) {
+  const url = await uploadImage(dataUrl, listingId);
+  const { data, error } = await supabase.from("listing_media").insert({ listing_id: listingId, media_url: url, media_type: "image", sort_order: sortOrder }).select("id").single();
+  if (error) {
+    await removeStorageFiles([url]);
+    fail(error, "تعذر رفع الصورة.");
+  }
+  return { id: data.id as string, url };
+}
+
+export async function removeListingImage(mediaId: string) {
+  const { data } = await supabase.from("listing_media").select("media_url").eq("id", mediaId).maybeSingle();
+  const { error, count } = await supabase.from("listing_media").delete({ count: "exact" }).eq("id", mediaId);
+  if (error || !count) throw new Error(t("تعذر حذف الصورة."));
+  if (data?.media_url) await removeStorageFiles([data.media_url as string]);
+  return { success: true } as const;
+}
+
+// ---------------------------------------------------------------------------
+// Moderation (local checks; an AI check can move to an Edge Function later)
+// ---------------------------------------------------------------------------
+
+const BLOCKED_TERMS = ["سلاح", "أسلحة", "اسلحة", "ذخيرة", "مسدس", "بندقية", "مخدرات", "حشيش", "كوكايين", "هيروين", "حبوب مخدرة", "إباحي", "اباحي", "دعارة", "تزوير", "جواز سفر للبيع", "بطاقات ائتمان مسروقة", "weapon", "firearm", "ammo", "cocaine", "heroin", "porn", "escort"];
+
+export function checkListingText(title: string, description: string): string | null {
+  const haystack = ` ${title} ${description} `.toLowerCase();
+  const hit = BLOCKED_TERMS.find((term) => new RegExp(`(^|[\\s،,.!؟?])${term.toLowerCase()}`).test(haystack));
+  return hit ? t("يحتوي الإعلان على كلمات مرتبطة بمواد ممنوعة ولا يمكن نشره.") : null;
+}
+
+// ---------------------------------------------------------------------------
+// Favorites, views, ratings
+// ---------------------------------------------------------------------------
+
+export async function getFavoriteIds(): Promise<Set<string>> {
+  const userId = await currentUserId();
+  if (!userId) return new Set();
+  const { data } = await supabase.from("favorites").select("listing_id").eq("user_id", userId);
+  return new Set((data ?? []).map((row) => row.listing_id as string));
+}
+
+export async function toggleFavorite(input: { listingId: string; save: boolean }) {
+  const userId = await requireUserId();
+  const { error } = input.save
+    ? await supabase.from("favorites").upsert({ user_id: userId, listing_id: input.listingId }, { onConflict: "user_id,listing_id" })
+    : await supabase.from("favorites").delete().eq("user_id", userId).eq("listing_id", input.listingId);
+  if (error) fail(error);
+  return input.save;
+}
+
+export type SavedListing = { listing: Listing | null; listingId: string; savedAt: string; available: boolean };
+
+/** Saved listings, including ones that were removed or are no longer active (spec 4.9). */
+export async function getSavedListings(): Promise<SavedListing[]> {
+  const userId = await requireUserId();
+  const { data, error } = await supabase.from("favorites").select(`listing_id, created_at, listing:listings(${LISTING_SELECT})`).eq("user_id", userId).order("created_at", { ascending: false }).limit(200);
+  type Row = { listing_id: string; created_at: string; listing: RawListing | null };
+  return rowsOrEmpty(data as unknown as Row[], error).map((row) => ({
+    listingId: row.listing_id,
+    savedAt: row.created_at,
+    listing: row.listing ? toListing(row.listing) : null,
+    available: row.listing?.status === "active",
+  }));
+}
+
+export async function recordView(input: { publicId: string }) {
+  const userId = await currentUserId();
+  if (!userId) return null;
+  await supabase.rpc("increment_listing_views", { p_listing_id: input.publicId }).then(() => undefined, () => undefined);
+  await supabase.from("listing_views").upsert({ listing_id: input.publicId, viewer_user_id: userId, viewed_at: new Date().toISOString() }, { onConflict: "listing_id,viewer_user_id" });
+  return true;
+}
+
+export async function getRecentViews() {
+  const userId = await requireUserId();
+  const { data, error } = await supabase.from("listing_views").select(`viewed_at, listing:listings(${LISTING_SELECT})`).eq("viewer_user_id", userId).order("viewed_at", { ascending: false }).limit(100);
+  type Row = { viewed_at: string; listing: RawListing | null };
+  return rowsOrEmpty(data as unknown as Row[], error)
+    .filter((row) => row.listing?.status === "active")
+    .map((row) => ({ listing: toListing(row.listing!), viewedAt: row.viewed_at }));
+}
+
+export async function rateListing(input: { publicId: string; rating: number; comment?: string }) {
+  const userId = await requireUserId();
+  const { data: listing } = await supabase.from("listings").select("user_id").eq("id", input.publicId).maybeSingle();
+  if (!listing || listing.user_id === userId) throw new Error(t("لا يمكنك تقييم إعلانك."));
+  const { error } = await supabase.from("listing_ratings").upsert({ listing_id: input.publicId, reviewer_user_id: userId, seller_id: listing.user_id, rating: input.rating, comment: input.comment ?? null }, { onConflict: "listing_id,reviewer_user_id" });
+  if (error) fail(error, "افتح الإعلان أولًا ثم قيّمه.");
+  return true;
+}
+
+export async function getSellerRating(sellerId: string): Promise<{ average: number; count: number }> {
+  const { data } = await supabase.from("listing_ratings").select("rating").eq("seller_id", sellerId).limit(500);
+  const ratings = (data ?? []).map((r) => Number(r.rating));
+  return { count: ratings.length, average: ratings.length ? ratings.reduce((a, b) => a + b, 0) / ratings.length : 0 };
+}
+
+// ---------------------------------------------------------------------------
+// Account & profile
 // ---------------------------------------------------------------------------
 
 export type AppUser = {
@@ -283,6 +569,10 @@ export type AppUser = {
   openId: string;
   name: string | null;
   email: string | null;
+  phone: string | null;
+  city: string | null;
+  bio: string | null;
+  avatarUrl: string | null;
   loginMethod: string | null;
   role?: "user" | "admin" | "merchant";
   merchantStatus?: "none" | "pending" | "active" | "rejected" | "suspended";
@@ -293,7 +583,6 @@ export async function getCurrentUser(): Promise<AppUser | null> {
   const { data } = await supabase.auth.getSession();
   const authUser = data.session?.user;
   if (!authUser) return null;
-  // select("*") so this keeps working before and after the role columns migration.
   const { data: profile } = await supabase.from("profiles").select("*").eq("id", authUser.id).maybeSingle();
   const p = (profile ?? {}) as Record<string, unknown>;
   const role = p.role === "admin" || p.role === "merchant" ? p.role : "user";
@@ -302,6 +591,10 @@ export async function getCurrentUser(): Promise<AppUser | null> {
     openId: authUser.id,
     name: (p.full_name as string | null) ?? (authUser.user_metadata?.full_name as string | undefined) ?? authUser.email?.split("@")[0] ?? null,
     email: authUser.email ?? null,
+    phone: (p.phone as string | null) ?? null,
+    city: (p.city as string | null) ?? null,
+    bio: (p.bio as string | null) ?? null,
+    avatarUrl: (p.avatar_url as string | null) ?? null,
     loginMethod: authUser.app_metadata?.provider ?? null,
     role,
     merchantStatus: (p.merchant_status as AppUser["merchantStatus"]) ?? "none",
@@ -309,39 +602,28 @@ export async function getCurrentUser(): Promise<AppUser | null> {
   };
 }
 
-type MerchantSubscription = {
-  status: "pending" | "active" | "expired" | "suspended" | "cancelled";
-  can_use_store: boolean;
-  can_manage_products: boolean;
-  can_reply_to_chats: boolean;
-  max_products: number;
-  max_images_per_product: number;
-};
+export async function updateProfile(input: { fullName: string; phone: string; city: string; bio: string; avatarUrl?: string | null }) {
+  const userId = await requireUserId();
+  if (input.fullName.trim().length < 2) throw new Error(t("الاسم قصير جدًا."));
+  if (input.phone.trim() && !/^[+\d\s٠-٩-]{8,20}$/.test(input.phone.trim())) throw new Error(t("رقم الهاتف غير صحيح."));
+  const values: Record<string, unknown> = { full_name: input.fullName.trim().slice(0, 80), phone: input.phone.trim() || null, city: input.city.trim().slice(0, 60) || null, bio: input.bio.trim().slice(0, 500) || null };
+  if (input.avatarUrl !== undefined) values.avatar_url = input.avatarUrl;
+  const { error } = await supabase.from("profiles").update(values).eq("id", userId);
+  if (error) fail(error, "تعذر حفظ الملف الشخصي.");
+  return true;
+}
 
-async function latestSubscription(userId: string): Promise<MerchantSubscription | null> {
-  const { data, error } = await supabase.from("merchant_subscriptions").select("*").eq("user_id", userId).order("created_at", { ascending: false }).limit(1);
-  if (error) return null;
-  return (data?.[0] as MerchantSubscription | undefined) ?? null;
+export async function changePassword(newPassword: string) {
+  if (newPassword.length < 8) throw new Error(t("كلمة المرور يجب أن تكون 8 أحرف على الأقل."));
+  const { error } = await supabase.auth.updateUser({ password: newPassword });
+  if (error) throw new Error(error.message);
+  return true;
 }
 
 export async function getPermissions() {
   const user = await getCurrentUser();
-  if (!user) throw new Error("يجب تسجيل الدخول أولًا.");
-  const subscription = user.role === "merchant" ? await latestSubscription(user.id) : null;
-  return getMarketplacePermissions({
-    role: user.role ?? "user",
-    merchantStatus: user.merchantStatus,
-    subscription: subscription
-      ? {
-          status: subscription.status,
-          canUseStore: subscription.can_use_store,
-          canManageProducts: subscription.can_manage_products,
-          canReplyToChats: subscription.can_reply_to_chats,
-          maxProducts: subscription.max_products,
-          maxImagesPerProduct: subscription.max_images_per_product,
-        }
-      : null,
-  });
+  if (!user) throw new Error("LOGIN_REQUIRED");
+  return getMarketplacePermissions({ role: user.role ?? "user", merchantStatus: user.merchantStatus, subscription: null });
 }
 
 export async function logout() {
@@ -350,481 +632,385 @@ export async function logout() {
 }
 
 /**
- * Account deletion from the client: removes the user's listings, media and favorites
- * (allowed by RLS) then signs out. Deleting the auth user itself needs a server-side
- * Edge Function with service_role — never done from the app.
+ * Account deletion request: removes the user's listings, images, favorites and store, clears the
+ * profile and signs out. Removing the login itself needs a server function with service_role.
  */
 export async function deleteAccount() {
   const userId = await requireUserId();
+  const failures: string[] = [];
   const { data: mine } = await supabase.from("listings").select("id").eq("user_id", userId);
-  const ids = (mine ?? []).map((row) => row.id as string);
-  if (ids.length) {
-    await supabase.from("listing_media").delete().in("listing_id", ids);
-    await supabase.from("favorites").delete().in("listing_id", ids);
-    await supabase.from("listings").delete().eq("user_id", userId);
+  for (const row of mine ?? []) {
+    try { await deleteListing({ id: row.id as string }); } catch { failures.push(row.id as string); }
   }
   await supabase.from("favorites").delete().eq("user_id", userId);
-  await supabase.from("profiles").update({ full_name: null, phone: null, bio: null, avatar_url: null }).eq("id", userId);
+  await supabase.from("profiles").update({ full_name: null, phone: null, bio: null, avatar_url: null, city: null }).eq("id", userId);
+  if (failures.length) throw new Error(t("تعذر حذف بعض الإعلانات. حاول مرة أخرى."));
   await supabase.auth.signOut();
   return { success: true } as const;
 }
 
 // ---------------------------------------------------------------------------
-// Listings
+// Stores (spec 4.7)
 // ---------------------------------------------------------------------------
 
-export async function listPublicListings(input?: { limit?: number }): Promise<PublicListing[]> {
-  const limit = Math.max(1, Math.min(input?.limit ?? 30, 100));
-  const { data, error } = await supabase.from("listings").select(LISTING_SELECT).eq("status", "active").order("created_at", { ascending: false }).limit(limit);
-  if (error) throw new Error(error.message);
-  return ((data ?? []) as unknown as RawListing[]).map(toPublicListing);
+export type StoreType = "small_shop" | "merchant" | "supplier" | "service_provider";
+export type Store = {
+  id: string; ownerId: string; name: string; description: string | null; logoUrl: string | null; coverUrl: string | null;
+  locationId: number | null; phone: string | null; whatsapp: string | null; storeType: StoreType;
+  status: "pending" | "active" | "suspended"; isFeatured: boolean; createdAt: string;
+};
+
+const toStore = (row: Record<string, any>): Store => ({
+  id: row.id ?? row.store_id, ownerId: row.owner_id ?? row.merchant_id, name: row.name, description: row.description ?? null,
+  logoUrl: row.logo_url ?? null, coverUrl: row.cover_url ?? null, locationId: row.location_id ?? null, phone: row.phone ?? null,
+  whatsapp: row.whatsapp ?? null, storeType: row.store_type ?? "small_shop", status: row.status ?? "active",
+  isFeatured: Boolean(row.is_featured), createdAt: row.created_at,
+});
+
+export async function listStores(input?: { featured?: boolean; q?: string; limit?: number }): Promise<Store[]> {
+  let query = supabase.from("public_stores").select("*");
+  if (input?.featured) query = query.eq("is_featured", true);
+  if (input?.q?.trim()) query = query.ilike("name", likeTerm(input.q));
+  const { data, error } = await query.order("is_featured", { ascending: false }).order("created_at", { ascending: false }).limit(input?.limit ?? 50);
+  return rowsOrEmpty(data as Record<string, any>[] | null, error).map(toStore);
 }
 
-export async function getPublicListing(input: { publicId: string }): Promise<PublicListing> {
-  const { data, error } = await supabase.from("listings").select(LISTING_SELECT).eq("id", input.publicId).eq("status", "active").maybeSingle();
-  if (error) throw new Error(error.message);
-  if (!data) throw new Error("LISTING_NOT_FOUND");
-  return toPublicListing(data as unknown as RawListing);
-}
-
-export async function getMyListings(): Promise<ListingRow[]> {
-  const userId = await requireUserId();
-  const { data, error } = await supabase.from("listings").select(LISTING_SELECT).eq("user_id", userId).order("updated_at", { ascending: false }).limit(200);
-  if (error) throw new Error(error.message);
-  return ((data ?? []) as unknown as RawListing[]).map(toListingRow);
-}
-
-type DraftInput = { publicId?: string; title?: string; description?: string; category?: string; price?: string; location?: string; phone?: string };
-
-async function draftColumns(values: DraftInput, existingAttributes: Record<string, unknown> = {}) {
-  const { price, priceText } = parsePrice(values.price);
-  const attributes: Record<string, unknown> = { ...existingAttributes };
-  if (values.category !== undefined) attributes.category_label = values.category || null;
-  if (values.location !== undefined) attributes.location_label = values.location || null;
-  if (values.price !== undefined) attributes.price_text = priceText;
-  const columns: Record<string, unknown> = { attributes };
-  if (values.title !== undefined) columns.title = values.title?.trim() || "مسودة إعلان";
-  if (values.description !== undefined) columns.description = values.description ?? null;
-  if (values.phone !== undefined) columns.phone = values.phone || null;
-  if (values.price !== undefined) columns.price = price;
-  if (values.category !== undefined) columns.category_id = await categoryIdFor(values.category);
-  if (values.location !== undefined) columns.location_id = await locationIdFor(values.location);
-  return columns;
-}
-
-export async function createDraft(input: DraftInput): Promise<ListingRow> {
-  const userId = await requireUserId();
-  const columns = await draftColumns({ title: input.title ?? "", ...input });
-  const attributes = { ...(columns.attributes as Record<string, unknown>), version: 1 };
-  const { data, error } = await supabase.from("listings").insert({ ...columns, attributes, user_id: userId, status: "draft" }).select(LISTING_SELECT).single();
-  if (error) fail(error, "تعذر حفظ المسودة.");
-  return toListingRow(data as unknown as RawListing);
-}
-
-async function loadOwnDraft(publicId: string, userId: string) {
-  const { data, error } = await supabase.from("listings").select("id, status, attributes").eq("id", publicId).eq("user_id", userId).maybeSingle();
+export async function getStore(input: { merchantId: string }): Promise<{ store: Store; products: Listing[]; featured: Listing[] }> {
+  const { data, error } = await supabase.from("public_stores").select("*").eq("merchant_id", input.merchantId).maybeSingle();
   if (error) fail(error);
-  return data as { id: string; status: string; attributes: Record<string, unknown> | null } | null;
+  if (!data) throw new Error("STORE_NOT_FOUND");
+  const store = toStore(data);
+  const products = (await searchListings({ sellerId: store.ownerId, pageSize: 60 })).items;
+  return { store, products, featured: products.filter((p) => p.isFeatured) };
 }
 
-export async function updateDraft(input: DraftInput & { publicId: string; expectedVersion: number }): Promise<ListingRow> {
+export async function getMyStore(): Promise<Store | null> {
   const userId = await requireUserId();
-  const current = await loadOwnDraft(input.publicId, userId);
-  const currentVersion = typeof current?.attributes?.version === "number" ? current.attributes.version : 1;
-  if (!current || current.status !== "draft" || currentVersion !== input.expectedVersion) conflict("DRAFT_NOT_EDITABLE");
-  const { publicId, expectedVersion, ...values } = input;
-  const columns = await draftColumns(values, current.attributes ?? {});
-  (columns.attributes as Record<string, unknown>).version = expectedVersion + 1;
-  const { data, error } = await supabase.from("listings").update(columns).eq("id", publicId).eq("user_id", userId).eq("status", "draft").select(LISTING_SELECT).single();
-  if (error) fail(error, "DRAFT_NOT_EDITABLE");
-  return toListingRow(data as unknown as RawListing);
-}
-
-export async function submitDraft(input: Required<Omit<DraftInput, "price" | "publicId">> & { publicId: string; expectedVersion: number; price?: string }): Promise<ListingRow> {
-  const userId = await requireUserId();
-  const current = await loadOwnDraft(input.publicId, userId);
-  const currentVersion = typeof current?.attributes?.version === "number" ? current.attributes.version : 1;
-  if (!current || current.status !== "draft" || currentVersion !== input.expectedVersion) conflict("DRAFT_NOT_SUBMITTABLE");
-  const { publicId, expectedVersion, ...values } = input;
-  const columns = await draftColumns(values, current.attributes ?? {});
-  (columns.attributes as Record<string, unknown>).version = expectedVersion + 1;
-  // Published straight away (Supabase listings have no "pending" state); admins can archive it later.
-  const { data, error } = await supabase.from("listings").update({ ...columns, status: "active" }).eq("id", publicId).eq("user_id", userId).eq("status", "draft").select(LISTING_SELECT).single();
-  if (error) fail(error, "DRAFT_NOT_SUBMITTABLE");
-  return toListingRow(data as unknown as RawListing);
-}
-
-export async function deleteDraft(input: { publicId: string }) {
-  const userId = await requireUserId();
-  const { data: media } = await supabase.from("listing_media").select("id, media_url").eq("listing_id", input.publicId);
-  await removeStorageFiles((media ?? []).map((item) => item.media_url as string));
-  await supabase.from("listing_media").delete().eq("listing_id", input.publicId);
-  const { error, count } = await supabase.from("listings").delete({ count: "exact" }).eq("id", input.publicId).eq("user_id", userId).eq("status", "draft");
-  if (error) fail(error, "DRAFT_NOT_DELETABLE");
-  if (!count) conflict("DRAFT_NOT_DELETABLE");
-  return { success: true } as const;
-}
-
-// ---------------------------------------------------------------------------
-// Media (Supabase Storage bucket "listing-media", folder = user id)
-// ---------------------------------------------------------------------------
-
-function storagePathFromUrl(url: string): string | null {
-  const marker = `/object/public/${LISTING_MEDIA_BUCKET}/`;
-  const index = url.indexOf(marker);
-  return index >= 0 ? decodeURIComponent(url.slice(index + marker.length)) : null;
-}
-
-async function removeStorageFiles(urls: string[]) {
-  const paths = urls.map(storagePathFromUrl).filter((path): path is string => Boolean(path));
-  if (paths.length) await supabase.storage.from(LISTING_MEDIA_BUCKET).remove(paths);
-}
-
-function dataUrlToBytes(dataUrl: string): { bytes: Uint8Array; mimeType: string; extension: string } {
-  const match = /^data:image\/(jpeg|jpg|png|webp);base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl);
-  if (!match) throw new Error("INVALID_IMAGE_BYTES");
-  const extension = match[1] === "jpg" ? "jpeg" : match[1];
-  const binary = globalThis.atob(match[2]);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
-  return { bytes, mimeType: `image/${extension}`, extension };
-}
-
-type UploadResult =
-  | { status: "approved"; mediaUrl: string; mediaAssetId: string; listingMediaId: string }
-  | { status: "rejected" | "review"; reason: string };
-
-export async function uploadForDraft(input: { publicId: string; dataUrl: string }): Promise<UploadResult> {
-  const userId = await requireUserId();
-  if (!isSupportedImageDataUrl(input.dataUrl)) throw new Error("INVALID_IMAGE_BYTES");
-  const { bytes, mimeType, extension } = dataUrlToBytes(input.dataUrl);
-  if (bytes.length === 0 || bytes.length > 1_500_000) throw new Error("MEDIA_SIZE_INVALID");
-  const path = `${userId}/${input.publicId}/${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.${extension}`;
-  const { error: uploadError } = await supabase.storage.from(LISTING_MEDIA_BUCKET).upload(path, bytes, { contentType: mimeType, upsert: false });
-  if (uploadError) throw new Error(uploadError.message);
-  const mediaUrl = supabase.storage.from(LISTING_MEDIA_BUCKET).getPublicUrl(path).data.publicUrl;
-  const { count } = await supabase.from("listing_media").select("id", { count: "exact", head: true }).eq("listing_id", input.publicId);
-  const { data, error } = await supabase.from("listing_media").insert({ listing_id: input.publicId, media_url: mediaUrl, media_type: "image", sort_order: count ?? 0 }).select("id").single();
-  if (error) {
-    await supabase.storage.from(LISTING_MEDIA_BUCKET).remove([path]);
-    fail(error, "MEDIA_DRAFT_LINK_FAILED");
-  }
-  return { status: "approved", mediaUrl, mediaAssetId: data.id as string, listingMediaId: data.id as string };
-}
-
-export async function detachFromDraft(input: { listingMediaId: string | number }) {
-  const { data } = await supabase.from("listing_media").select("media_url").eq("id", String(input.listingMediaId)).maybeSingle();
-  const { error, count } = await supabase.from("listing_media").delete({ count: "exact" }).eq("id", String(input.listingMediaId));
-  if (error || !count) throw new Error("MEDIA_DELETE_FORBIDDEN");
-  if (data?.media_url) await removeStorageFiles([data.media_url as string]);
-  return { success: true } as const;
-}
-
-// ---------------------------------------------------------------------------
-// Moderation
-// The original used an LLM on the Manus server. Here we run local checks only;
-// an AI check can later move to a Supabase Edge Function without touching screens.
-// ---------------------------------------------------------------------------
-
-const BLOCKED_TERMS = ["سلاح", "أسلحة", "اسلحة", "ذخيرة", "رصاص", "مسدس", "بندقية", "مخدرات", "حشيش", "كوكايين", "هيروين", "حبوب مخدرة", "إباحي", "اباحي", "جنس", "دعارة", "تزوير", "جواز سفر للبيع", "بطاقات ائتمان", "weapon", "gun", "ammo", "drugs", "cocaine", "porn"];
-
-type ModerationResult = { verdict: "allow" | "reject" | "review"; safeToPublish: boolean; category: string; reason: string; confidence: number };
-type ImageModerationResult = { verdict: "allow" | "reject" | "review"; safeToPublish: boolean; categories: string[]; reason: string; confidence: number };
-
-export async function checkListing(input: { title: string; description: string; category?: string; price?: string; location?: string; phone?: string }): Promise<ModerationResult> {
-  const haystack = `${input.title} ${input.description}`.toLowerCase();
-  const hit = BLOCKED_TERMS.find((term) => haystack.includes(term.toLowerCase()));
-  if (hit) {
-    return { verdict: "reject", safeToPublish: false, category: "prohibited", reason: "يحتوي الإعلان على كلمات مرتبطة بمواد ممنوعة ولا يمكن نشره.", confidence: 0.95 };
-  }
-  return { verdict: "allow", safeToPublish: true, category: input.category ?? "general", reason: "اجتاز الإعلان فحص الأمان الأساسي.", confidence: 0.95 };
-}
-
-export async function checkImage(input: { dataUrl: string }): Promise<ImageModerationResult> {
-  if (!isSupportedImageDataUrl(input.dataUrl)) {
-    return { verdict: "reject", safeToPublish: false, categories: ["invalid_image"], reason: "صيغة الصورة غير مدعومة.", confidence: 1 };
-  }
-  return { verdict: "allow", safeToPublish: true, categories: [] as string[], reason: "صورة صالحة.", confidence: 0.95 };
-}
-
-// ---------------------------------------------------------------------------
-// Favorites, views, ratings
-// ---------------------------------------------------------------------------
-
-export async function saveListing(input: { publicId: string }) {
-  const userId = await requireUserId();
-  const { error } = await supabase.from("favorites").upsert({ user_id: userId, listing_id: input.publicId }, { onConflict: "user_id,listing_id" });
-  if (error) fail(error);
-  return true;
-}
-
-export async function unsaveListing(input: { publicId: string }) {
-  const userId = await requireUserId();
-  const { error } = await supabase.from("favorites").delete().eq("user_id", userId).eq("listing_id", input.publicId);
-  if (error) fail(error);
-  return true;
-}
-
-export async function getSavedListings() {
-  const userId = await requireUserId();
-  const { data, error } = await supabase.from("favorites").select("created_at, listing:listings(id, title, price, status, attributes, location:locations!listings_location_id_fkey(name_ar))").eq("user_id", userId).order("created_at", { ascending: false }).limit(100);
-  type Row = { created_at: string; listing: (Pick<RawListing, "id" | "title" | "price" | "status" | "attributes" | "location">) | null };
-  return rowsOrEmpty(data as unknown as Row[], error)
-    .filter((row) => row.listing && row.listing.status === "active")
-    .map((row) => {
-      const listing = row.listing as RawListing;
-      return { publicId: listing.id, title: listing.title, price: priceLabel(listing), location: locationLabel(listing), createdAt: new Date(row.created_at) };
-    });
-}
-
-export async function recordView(input: { publicId: string }) {
-  const userId = await requireUserId();
-  await supabase.rpc("increment_listing_views", { p_listing_id: input.publicId }).then(() => undefined, () => undefined);
-  const { error } = await supabase.from("listing_views").upsert({ listing_id: input.publicId, viewer_user_id: userId, viewed_at: new Date().toISOString() }, { onConflict: "listing_id,viewer_user_id" });
+  const { data, error } = await supabase.from("stores").select("*").eq("owner_id", userId).maybeSingle();
   if (error && !isMissingTable(error)) throw new Error(error.message);
-  return { listingId: input.publicId, sellerId: "" };
+  return data ? toStore(data) : null;
 }
 
-export async function getRecentViews() {
-  const userId = await requireUserId();
-  const { data, error } = await supabase.from("listing_views").select("viewed_at, listing:listings(id, title, status)").eq("viewer_user_id", userId).order("viewed_at", { ascending: false }).limit(100);
-  type Row = { viewed_at: string; listing: { id: string; title: string | null; status: string } | null };
-  return rowsOrEmpty(data as unknown as Row[], error)
-    .filter((row) => row.listing?.status === "active")
-    .map((row) => ({ publicId: row.listing!.id, title: row.listing!.title, viewedAt: new Date(row.viewed_at) }));
-}
+export type StoreInput = { name: string; description: string; logoUrl: string | null; coverUrl: string | null; locationId: number | null; phone: string; whatsapp: string; storeType: StoreType };
 
-export async function rateListing(input: { publicId: string; rating: number; comment?: string }) {
+export async function saveMyStore(input: StoreInput): Promise<Store> {
   const userId = await requireUserId();
-  const { data: listing } = await supabase.from("listings").select("user_id").eq("id", input.publicId).maybeSingle();
-  if (!listing || listing.user_id === userId) return false;
-  const { data: visit, error: visitError } = await supabase.from("listing_views").select("listing_id").eq("listing_id", input.publicId).eq("viewer_user_id", userId).maybeSingle();
-  if (visitError) fail(visitError);
-  if (!visit) throw new Error("LISTING_VISIT_REQUIRED");
-  const { error } = await supabase.from("listing_ratings").upsert({ listing_id: input.publicId, reviewer_user_id: userId, seller_id: listing.user_id, rating: input.rating, comment: input.comment ?? null }, { onConflict: "listing_id,reviewer_user_id" });
-  if (error) fail(error);
-  return true;
+  if (input.name.trim().length < 2) throw new Error(t("اسم المتجر قصير جدًا."));
+  const values = {
+    name: input.name.trim().slice(0, 80), description: input.description.trim().slice(0, 1000) || null, logo_url: input.logoUrl, cover_url: input.coverUrl,
+    location_id: input.locationId, phone: input.phone.trim() || null, whatsapp: input.whatsapp.trim() || null, store_type: input.storeType,
+  };
+  const existing = await getMyStore();
+  const { data, error } = existing
+    ? await supabase.from("stores").update(values).eq("owner_id", userId).select("*").single()
+    : await supabase.from("stores").insert({ ...values, owner_id: userId }).select("*").single();
+  if (error) fail(error, "تعذر حفظ المتجر.");
+  return toStore(data);
 }
 
 // ---------------------------------------------------------------------------
-// Follows & notifications
+// Messaging (spec 4.8)
 // ---------------------------------------------------------------------------
 
-export async function getFollowedUsers() {
+export type Conversation = {
+  id: string; listingId: string | null; listingTitle: string | null; listingImage: string | null;
+  buyerId: string; sellerId: string; otherUserId: string; otherName: string; otherAvatar: string | null;
+  status: "active" | "closed"; updatedAt: string; lastMessage: string | null; lastAt: string | null; unread: number; iAmSeller: boolean;
+};
+export type Message = { id: string; conversationId: string; senderId: string; body: string; imageUrl: string | null; readAt: string | null; createdAt: string };
+
+export async function listConversations(): Promise<Conversation[]> {
   const userId = await requireUserId();
-  const { data, error } = await supabase.from("user_follows").select("followed_user_id, created_at, followed:profiles!user_follows_followed_user_id_fkey(full_name)").eq("follower_user_id", userId).order("created_at", { ascending: false }).limit(100);
-  type Row = { followed_user_id: string; created_at: string; followed: { full_name: string | null } | null };
-  return rowsOrEmpty(data as unknown as Row[], error).map((row) => ({ userId: row.followed_user_id, name: row.followed?.full_name ?? null, createdAt: new Date(row.created_at) }));
+  const { data, error } = await supabase
+    .from("store_conversations")
+    .select("*, listing:listings(id, title, media:listing_media(media_url, sort_order)), buyer:profiles!store_conversations_buyer_user_id_fkey(full_name, username, avatar_url), seller:profiles!store_conversations_merchant_user_id_fkey(full_name, username, avatar_url)")
+    .or(`buyer_user_id.eq.${userId},merchant_user_id.eq.${userId}`)
+    .order("updated_at", { ascending: false })
+    .limit(100);
+  const rows = rowsOrEmpty(data as Record<string, any>[] | null, error);
+  if (!rows.length) return [];
+  const { data: msgs } = await supabase.from("store_messages").select("conversation_id, sender_user_id, body, image_url, read_at, created_at").in("conversation_id", rows.map((r) => r.id)).order("created_at", { ascending: false }).limit(1000);
+  return rows.map((row) => {
+    const iAmSeller = row.merchant_user_id === userId;
+    const other = iAmSeller ? row.buyer : row.seller;
+    const mine = (msgs ?? []).filter((m) => m.conversation_id === row.id);
+    const last = mine[0];
+    const media = [...(row.listing?.media ?? [])].sort((a: any, b: any) => a.sort_order - b.sort_order);
+    return {
+      id: row.id, listingId: row.listing_id, listingTitle: row.listing?.title ?? null, listingImage: media[0]?.media_url ?? null,
+      buyerId: row.buyer_user_id, sellerId: row.merchant_user_id, otherUserId: iAmSeller ? row.buyer_user_id : row.merchant_user_id,
+      otherName: other?.full_name || other?.username || t("مستخدم"), otherAvatar: other?.avatar_url ?? null,
+      status: row.status, updatedAt: row.updated_at, lastMessage: last ? (last.body || (last.image_url ? t("📷 صورة") : "")) : null, lastAt: last?.created_at ?? null,
+      unread: mine.filter((m) => !m.read_at && m.sender_user_id !== userId).length, iAmSeller,
+    };
+  });
 }
 
-export async function followUser(input: { userId: string | number }) {
+export async function unreadMessageCount(): Promise<number> {
+  try {
+    return (await listConversations()).reduce((sum, c) => sum + c.unread, 0);
+  } catch {
+    return 0;
+  }
+}
+
+export async function getMessages(conversationId: string): Promise<Message[]> {
+  await requireUserId();
+  const { data, error } = await supabase.from("store_messages").select("*").eq("conversation_id", conversationId).order("created_at", { ascending: true }).limit(300);
+  return rowsOrEmpty(data as Record<string, any>[] | null, error).map((r) => ({ id: r.id, conversationId: r.conversation_id, senderId: r.sender_user_id, body: r.body, imageUrl: r.image_url ?? null, readAt: r.read_at, createdAt: r.created_at }));
+}
+
+export async function markConversationRead(conversationId: string) {
   const userId = await requireUserId();
-  if (String(input.userId) === userId) throw new Error("SELF_FOLLOW_FORBIDDEN");
-  const { error } = await supabase.from("user_follows").upsert({ follower_user_id: userId, followed_user_id: String(input.userId) }, { onConflict: "follower_user_id,followed_user_id" });
-  if (error) fail(error);
+  await supabase.from("store_messages").update({ read_at: new Date().toISOString() }).eq("conversation_id", conversationId).neq("sender_user_id", userId).is("read_at", null);
+}
+
+export async function startConversation(listingId: string): Promise<string> {
+  const userId = await requireUserId();
+  const { data: listing } = await supabase.from("listings").select("id, user_id").eq("id", listingId).eq("status", "active").maybeSingle();
+  if (!listing) throw new Error("LISTING_NOT_FOUND");
+  if (listing.user_id === userId) throw new Error(t("هذا إعلانك."));
+  const { data: existing } = await supabase.from("store_conversations").select("id").eq("listing_id", listingId).eq("buyer_user_id", userId).eq("status", "active").maybeSingle();
+  if (existing) return existing.id as string;
+  const { data, error } = await supabase.from("store_conversations").insert({ listing_id: listingId, buyer_user_id: userId, merchant_user_id: listing.user_id, status: "active" }).select("id").single();
+  if (error) fail(error, "تعذر بدء المحادثة.");
+  return data.id as string;
+}
+
+export async function sendMessage(input: { conversationId: string; body: string; imageDataUrl?: string | null }) {
+  const userId = await requireUserId();
+  const body = input.body.trim().slice(0, 2000);
+  let imageUrl: string | null = null;
+  if (input.imageDataUrl) imageUrl = await uploadImage(input.imageDataUrl, "chat");
+  if (!body && !imageUrl) throw new Error(t("اكتب رسالة أولًا."));
+  const { error } = await supabase.from("store_messages").insert({ conversation_id: input.conversationId, sender_user_id: userId, body, image_url: imageUrl });
+  if (error) fail(error, "تعذر إرسال الرسالة.");
   return true;
 }
 
-export async function unfollowUser(input: { userId: string | number }) {
-  const userId = await requireUserId();
-  const { error } = await supabase.from("user_follows").delete().eq("follower_user_id", userId).eq("followed_user_id", String(input.userId));
-  if (error) fail(error);
-  return true;
+export async function getBlockedIds(): Promise<Set<string>> {
+  const userId = await currentUserId();
+  if (!userId) return new Set();
+  const { data } = await supabase.from("user_blocks").select("blocked_user_id").eq("blocker_user_id", userId);
+  return new Set((data ?? []).map((r) => r.blocked_user_id as string));
 }
 
-export type NotificationRow = { id: number; userId: string; type: string; title: string; body: string; listingId: string | null; readAt: Date | null; createdAt: Date };
+export async function setBlocked(input: { userId: string; blocked: boolean }) {
+  const me = await requireUserId();
+  const { error } = input.blocked
+    ? await supabase.from("user_blocks").upsert({ blocker_user_id: me, blocked_user_id: input.userId }, { onConflict: "blocker_user_id,blocked_user_id" })
+    : await supabase.from("user_blocks").delete().eq("blocker_user_id", me).eq("blocked_user_id", input.userId);
+  if (error) fail(error);
+  return input.blocked;
+}
 
-export async function getNotifications(): Promise<NotificationRow[]> {
+// ---------------------------------------------------------------------------
+// Notifications (spec 4.11)
+// ---------------------------------------------------------------------------
+
+export type AppNotification = { id: number; type: string; title: string; body: string; listingId: string | null; readAt: string | null; createdAt: string };
+
+export async function getNotifications(): Promise<AppNotification[]> {
   const userId = await requireUserId();
   const { data, error } = await supabase.from("notifications").select("*").eq("user_id", userId).order("created_at", { ascending: false }).limit(100);
-  return rowsOrEmpty(data as Record<string, any>[] | null, error).map((row) => ({
-    id: row.id, userId: row.user_id, type: row.type, title: row.title, body: row.body, listingId: row.listing_id,
-    readAt: row.read_at ? new Date(row.read_at) : null, createdAt: new Date(row.created_at),
-  }));
+  return rowsOrEmpty(data as Record<string, any>[] | null, error).map((r) => ({ id: r.id, type: r.type, title: r.title, body: r.body, listingId: r.listing_id, readAt: r.read_at, createdAt: r.created_at }));
 }
 
-export async function markNotificationRead(input: { notificationId: number }) {
+/** Unread notification count, optionally skipping muted types (chat_message / listing_*). */
+export async function unreadNotificationCount(muted: { messages?: boolean; moderation?: boolean } = {}): Promise<number> {
+  const userId = await currentUserId();
+  if (!userId) return 0;
+  let query = supabase.from("notifications").select("id", { count: "exact", head: true }).eq("user_id", userId).is("read_at", null);
+  if (muted.messages) query = query.neq("type", "chat_message");
+  if (muted.moderation) query = query.not("type", "like", "listing\\_%");
+  const { count } = await query;
+  return count ?? 0;
+}
+
+export async function markNotificationsRead(ids?: number[]) {
   const userId = await requireUserId();
-  const { error } = await supabase.from("notifications").update({ read_at: new Date().toISOString() }).eq("id", input.notificationId).eq("user_id", userId);
+  let query = supabase.from("notifications").update({ read_at: new Date().toISOString() }).eq("user_id", userId).is("read_at", null);
+  if (ids?.length) query = query.in("id", ids);
+  const { error } = await query;
   if (error) fail(error);
   return true;
 }
 
-// ---------------------------------------------------------------------------
-// Merchant stores
-// ---------------------------------------------------------------------------
-
-export async function listStores() {
-  const { data, error } = await supabase.from("public_stores").select("merchant_id, name");
-  return rowsOrEmpty(data as { merchant_id: string; name: string | null }[] | null, error).map((row) => ({ merchantId: row.merchant_id, name: row.name ?? "متجر مسقط" }));
-}
-
-export async function getStore(input: { merchantId: string | number }) {
-  const merchantId = String(input.merchantId);
-  const { data: store, error } = await supabase.from("public_stores").select("merchant_id, name, max_products").eq("merchant_id", merchantId).maybeSingle();
-  if (error) fail(error);
-  if (!store) throw new Error("STORE_NOT_FOUND");
-  const { data: products, error: productsError } = await supabase.from("listings").select(LISTING_SELECT).eq("user_id", merchantId).eq("status", "active").order("created_at", { ascending: false }).limit((store as { max_products?: number }).max_products ?? 50);
-  if (productsError) fail(productsError);
-  return { merchantId, name: (store as { name: string | null }).name ?? "متجر مسقط", products: ((products ?? []) as unknown as RawListing[]).map(toListingRow) };
-}
-
-async function requireActiveMerchant(userId: string) {
-  const subscription = await latestSubscription(userId);
-  if (!subscription || subscription.status !== "active" || !subscription.can_use_store || !subscription.can_manage_products) throw new Error("MERCHANT_SUBSCRIPTION_NOT_ACTIVE");
-  return subscription;
-}
-
-export async function getMyProducts(): Promise<ListingRow[]> {
-  const userId = await requireUserId();
-  await requireActiveMerchant(userId);
-  const { data, error } = await supabase.from("listings").select(LISTING_SELECT).eq("user_id", userId).neq("status", "draft").order("updated_at", { ascending: false }).limit(200);
-  if (error) fail(error);
-  return ((data ?? []) as unknown as RawListing[]).map(toListingRow);
-}
-
-export async function createProduct(input: DraftInput & { title: string; description: string }) {
-  const userId = await requireUserId();
-  const subscription = await requireActiveMerchant(userId);
-  const { count } = await supabase.from("listings").select("id", { count: "exact", head: true }).eq("user_id", userId).eq("status", "active");
-  if ((count ?? 0) >= subscription.max_products) throw new Error("MERCHANT_PRODUCT_LIMIT_REACHED");
-  const columns = await draftColumns(input);
-  const attributes = { ...(columns.attributes as Record<string, unknown>), version: 1, store_product: true };
-  const { data, error } = await supabase.from("listings").insert({ ...columns, attributes, user_id: userId, status: "active" }).select(LISTING_SELECT).single();
-  if (error) fail(error);
-  return toListingRow(data as unknown as RawListing);
-}
-
-export async function updateProduct(input: DraftInput & { publicId: string }) {
-  const userId = await requireUserId();
-  await requireActiveMerchant(userId);
-  const current = await loadOwnDraft(input.publicId, userId);
-  if (!current) throw new Error("STORE_PRODUCT_NOT_FOUND");
-  const { publicId, ...values } = input;
-  const columns = await draftColumns(values, current.attributes ?? {});
-  const { data, error } = await supabase.from("listings").update(columns).eq("id", publicId).eq("user_id", userId).select(LISTING_SELECT).single();
-  if (error) fail(error);
-  return toListingRow(data as unknown as RawListing);
-}
-
-export async function deleteProduct(input: { publicId: string }) {
-  const userId = await requireUserId();
-  await requireActiveMerchant(userId);
-  const { error, count } = await supabase.from("listings").update({ status: "archived" }, { count: "exact" }).eq("id", input.publicId).eq("user_id", userId);
-  if (error) fail(error);
-  if (!count) throw new Error("STORE_PRODUCT_NOT_FOUND");
-  return { success: true } as const;
+export async function getAnnouncement(): Promise<{ ar: string; en: string } | null> {
+  const { data } = await supabase.from("platform_settings").select("value").eq("key", "announcement").maybeSingle();
+  const value = data?.value as { ar?: string; en?: string } | undefined;
+  return value && (value.ar || value.en) ? { ar: value.ar ?? "", en: value.en ?? "" } : null;
 }
 
 // ---------------------------------------------------------------------------
-// Store chats
+// Reports (spec 4.13)
 // ---------------------------------------------------------------------------
 
-export type ConversationRow = { id: string; publicId: string; listingId: string | null; buyerUserId: string; merchantUserId: string; status: "active" | "closed"; createdAt: Date; updatedAt: Date };
-export type MessageRow = { id: string; conversationId: string; senderUserId: string; body: string; readAt: Date | null; createdAt: Date };
+export type ReportReason = "fraud" | "misleading" | "inappropriate" | "suspicious_seller" | "prohibited" | "abuse" | "other";
+export type Report = {
+  id: string; reason: ReportReason; subject: string; details: string; status: "open" | "reviewing" | "resolved" | "dismissed";
+  priority: "low" | "medium" | "high"; listingId: string | null; listingTitle: string | null; reportedUserId: string | null; reportedName: string | null;
+  conversationId: string | null; reporterName: string | null; resolution: string | null; createdAt: string;
+};
 
-const toConversation = (row: Record<string, any>): ConversationRow => ({
-  id: row.id, publicId: row.id, listingId: row.listing_id, buyerUserId: row.buyer_user_id, merchantUserId: row.merchant_user_id,
-  status: row.status, createdAt: new Date(row.created_at), updatedAt: new Date(row.updated_at),
+export async function createReport(input: { reason: ReportReason; details: string; listingId?: string | null; reportedUserId?: string | null; conversationId?: string | null }) {
+  const userId = await requireUserId();
+  const details = input.details.trim();
+  if (details.length < 10) throw new Error(t("اكتب تفاصيل أكثر (10 أحرف على الأقل)."));
+  const priority = input.reason === "fraud" || input.reason === "prohibited" || input.reason === "abuse" ? "high" : "medium";
+  const { error } = await supabase.from("report_cases").insert({
+    reporter_user_id: userId, reason: input.reason, subject: input.reason, details: details.slice(0, 1000), priority,
+    listing_id: input.listingId ?? null, reported_user_id: input.reportedUserId ?? null, conversation_id: input.conversationId ?? null,
+  });
+  if (error) fail(error, "تعذر إرسال البلاغ.");
+  return true;
+}
+
+const REPORT_SELECT = "*, listing:listings(id, title), reporter:profiles!report_cases_reporter_user_id_fkey(full_name, username), reported:profiles!report_cases_reported_user_id_fkey(full_name, username)";
+const toReport = (r: Record<string, any>): Report => ({
+  id: r.id, reason: r.reason, subject: r.subject, details: r.details, status: r.status, priority: r.priority, listingId: r.listing_id,
+  listingTitle: r.listing?.title ?? null, reportedUserId: r.reported_user_id, reportedName: r.reported?.full_name || r.reported?.username || null,
+  conversationId: r.conversation_id, reporterName: r.reporter?.full_name || r.reporter?.username || null, resolution: r.resolution, createdAt: r.created_at,
 });
 
-export async function listChats(): Promise<ConversationRow[]> {
-  const userId = await requireUserId();
-  const { data, error } = await supabase.from("store_conversations").select("*").or(`buyer_user_id.eq.${userId},merchant_user_id.eq.${userId}`).order("updated_at", { ascending: false }).limit(100);
-  return rowsOrEmpty(data as Record<string, any>[] | null, error).map(toConversation);
-}
-
-export async function chatMessages(input: { conversationPublicId: string }): Promise<MessageRow[]> {
-  await requireUserId();
-  const { data, error } = await supabase.from("store_messages").select("*").eq("conversation_id", input.conversationPublicId).order("created_at", { ascending: true }).limit(200);
-  return rowsOrEmpty(data as Record<string, any>[] | null, error).map((row) => ({
-    id: row.id, conversationId: row.conversation_id, senderUserId: row.sender_user_id, body: row.body,
-    readAt: row.read_at ? new Date(row.read_at) : null, createdAt: new Date(row.created_at),
-  }));
-}
-
-export async function startChat(input: { listingPublicId: string }): Promise<ConversationRow> {
-  const userId = await requireUserId();
-  const { data: listing } = await supabase.from("listings").select("id, user_id").eq("id", input.listingPublicId).eq("status", "active").maybeSingle();
-  if (!listing || listing.user_id === userId) throw new Error("STORE_CONVERSATION_NOT_ALLOWED");
-  const { data: existing, error: existingError } = await supabase.from("store_conversations").select("*").eq("listing_id", listing.id).eq("buyer_user_id", userId).eq("status", "active").maybeSingle();
-  if (existingError) fail(existingError);
-  if (existing) return toConversation(existing);
-  const { data, error } = await supabase.from("store_conversations").insert({ listing_id: listing.id, buyer_user_id: userId, merchant_user_id: listing.user_id, status: "active" }).select("*").single();
-  if (error) fail(error, "STORE_CONVERSATION_NOT_ALLOWED");
-  return toConversation(data);
-}
-
-export async function sendChat(input: { conversationPublicId: string; body: string }): Promise<MessageRow> {
-  const userId = await requireUserId();
-  const { data, error } = await supabase.from("store_messages").insert({ conversation_id: input.conversationPublicId, sender_user_id: userId, body: input.body.trim() }).select("*").single();
-  if (error) fail(error, "STORE_MESSAGE_NOT_ALLOWED");
-  return { id: data.id, conversationId: data.conversation_id, senderUserId: data.sender_user_id, body: data.body, readAt: null, createdAt: new Date(data.created_at) };
-}
-
 // ---------------------------------------------------------------------------
-// Reports
+// Administration (spec 4.15). Every call is re-checked by RLS (is_admin()) and
+// every change is written to admin_audit_logs by a database trigger.
 // ---------------------------------------------------------------------------
 
-export type ReportRow = { id: string; publicId: string; reporterUserId: string; listingId: string | null; subject: string; details: string; status: "open" | "reviewing" | "resolved" | "dismissed"; priority: "low" | "medium" | "high"; reviewerUserId: string | null; resolution: string | null; createdAt: Date; updatedAt: Date };
-
-const toReport = (row: Record<string, any>): ReportRow => ({
-  id: row.id, publicId: row.id, reporterUserId: row.reporter_user_id, listingId: row.listing_id, subject: row.subject, details: row.details,
-  status: row.status, priority: row.priority, reviewerUserId: row.reviewer_user_id, resolution: row.resolution,
-  createdAt: new Date(row.created_at), updatedAt: new Date(row.updated_at),
-});
-
-export async function createReport(input: { publicId?: string; subject: string; details: string; priority?: "low" | "medium" | "high" }) {
-  const userId = await requireUserId();
-  const { data, error } = await supabase.from("report_cases").insert({ reporter_user_id: userId, listing_id: input.publicId ?? null, subject: input.subject.trim(), details: input.details.trim(), priority: input.priority ?? "medium" }).select("*").single();
-  if (error) fail(error, "REPORT_CREATE_FAILED");
-  return toReport(data);
+export async function adminOverview() {
+  const count = async (table: string, filter?: (q: any) => any) => {
+    let query: any = supabase.from(table).select("*", { count: "exact", head: true });
+    if (filter) query = filter(query);
+    const { count: n } = await query;
+    return n ?? 0;
+  };
+  const [users, active, pending, rejected, paused, storesPending, storesActive, reportsOpen, conversations] = await Promise.all([
+    count("profiles"),
+    count("listings", (q) => q.eq("status", "active")),
+    count("listings", (q) => q.eq("status", "pending")),
+    count("listings", (q) => q.eq("status", "rejected")),
+    count("listings", (q) => q.eq("status", "paused")),
+    count("stores", (q) => q.eq("status", "pending")),
+    count("stores", (q) => q.eq("status", "active")),
+    count("report_cases", (q) => q.in("status", ["open", "reviewing"])),
+    count("store_conversations"),
+  ]);
+  return { users, listings: { active, pending, rejected, paused }, stores: { pending: storesPending, active: storesActive }, reportsOpen, conversations };
 }
 
-export async function adminReports() {
-  const { data, error } = await supabase.from("report_cases").select("*, listing:listings(id, title), reporter:profiles!report_cases_reporter_user_id_fkey(full_name)").order("created_at", { ascending: false }).limit(200);
-  return rowsOrEmpty(data as Record<string, any>[] | null, error).map((row) => ({
-    report: toReport(row), listingPublicId: (row.listing?.id as string | undefined) ?? null, listingTitle: (row.listing?.title as string | undefined) ?? null, reporterName: (row.reporter?.full_name as string | undefined) ?? null,
-  }));
-}
-
-export async function adminUpdateReport(input: { publicId: string; status: "reviewing" | "resolved" | "dismissed"; resolution?: string }) {
-  const userId = await requireUserId();
-  const { data, error } = await supabase.from("report_cases").update({ status: input.status, reviewer_user_id: userId, resolution: input.resolution?.trim() || null }).eq("id", input.publicId).select("*").maybeSingle();
+export async function adminListings(input: { status?: DbStatus | "all"; q?: string }): Promise<Listing[]> {
+  let query = supabase.from("listings").select(LISTING_SELECT).order("created_at", { ascending: false }).limit(200);
+  if (input.status && input.status !== "all") query = query.eq("status", input.status);
+  if (input.q?.trim()) query = query.ilike("title", likeTerm(input.q));
+  const { data, error } = await query;
   if (error) fail(error);
-  return data ? toReport(data) : undefined;
+  return toListings(data);
 }
 
-// ---------------------------------------------------------------------------
-// Admin
-// ---------------------------------------------------------------------------
-
-export async function adminListings(input?: { search?: string }): Promise<ListingRow[]> {
-  const { data, error } = await supabase.from("listings").select(LISTING_SELECT).order("created_at", { ascending: false }).limit(200);
-  if (error) fail(error);
-  const rows = ((data ?? []) as unknown as RawListing[]).map(toListingRow);
-  const needle = input?.search?.trim().toLowerCase();
-  return needle ? rows.filter((row) => `${row.publicId} ${row.title ?? ""} ${row.category ?? ""} ${row.location ?? ""}`.toLowerCase().includes(needle)) : rows;
-}
-
-export async function adminUsers(input?: { search?: string }) {
-  const { data, error } = await supabase.from("profiles").select("*").order("created_at", { ascending: false }).limit(500);
-  const rows = rowsOrEmpty(data as Record<string, any>[] | null, error).map((row) => ({
-    id: row.id as string, name: (row.full_name ?? row.username ?? null) as string | null, email: null as string | null,
-    role: (row.role ?? "user") as "user" | "merchant" | "admin", merchantStatus: (row.merchant_status ?? "none") as string, createdAt: new Date(row.created_at),
-  }));
-  const needle = input?.search?.trim().toLowerCase();
-  return needle ? rows.filter((row) => `${row.name ?? ""} ${row.role} ${row.merchantStatus}`.toLowerCase().includes(needle)) : rows;
-}
-
-export async function moderateListing(input: { publicId: string; status: "published" | "rejected" | "suspended"; reason?: string }) {
+export async function moderateListing(input: { id: string; action: "approve" | "reject" | "suspend" | "feature" | "unfeature"; reason?: string }) {
   await requireUserId();
-  const { data: current, error: readError } = await supabase.from("listings").select("attributes").eq("id", input.publicId).maybeSingle();
+  const { data: current, error: readError } = await supabase.from("listings").select("attributes").eq("id", input.id).maybeSingle();
   if (readError) fail(readError);
   if (!current) throw new Error("LISTING_NOT_FOUND");
-  const attributes = { ...((current.attributes as Record<string, unknown>) ?? {}), moderation_status: input.status, moderation_reason: input.reason?.trim() || null };
-  const { data, error } = await supabase.from("listings").update({ status: input.status === "published" ? "active" : "archived", attributes }).eq("id", input.publicId).select(LISTING_SELECT).maybeSingle();
+  const attributes = { ...((current.attributes as Record<string, unknown>) ?? {}) };
+  let values: Record<string, unknown> = {};
+  if (input.action === "feature" || input.action === "unfeature") values = { is_featured: input.action === "feature" };
+  else {
+    if ((input.action === "reject" || input.action === "suspend") && !input.reason?.trim()) throw new Error(t("اكتب سبب القرار."));
+    attributes.moderation_status = input.action === "approve" ? "approved" : input.action === "reject" ? "rejected" : "suspended";
+    attributes.moderation_reason = input.reason?.trim() || null;
+    values = { status: input.action === "approve" ? "active" : "rejected", attributes };
+  }
+  const { data, error } = await supabase.from("listings").update(values).eq("id", input.id).select("id").maybeSingle();
   if (error) fail(error);
-  if (!data) throw new Error("لا تملك صلاحية المشرف لتعديل هذا الإعلان.");
-  return toListingRow(data as unknown as RawListing);
+  if (!data) throw new Error(t("لا تملك صلاحية المشرف لهذا الإجراء."));
+  return true;
+}
+
+export type AdminUser = { id: string; name: string; username: string | null; phone: string | null; role: "user" | "merchant" | "admin"; merchantStatus: string; createdAt: string };
+
+export async function adminUsers(input: { q?: string }): Promise<AdminUser[]> {
+  let query = supabase.from("profiles").select("id, full_name, username, phone, role, merchant_status, created_at").order("created_at", { ascending: false }).limit(300);
+  if (input.q?.trim()) query = query.or(`full_name.ilike.${likeTerm(input.q)},username.ilike.${likeTerm(input.q)}`);
+  const { data, error } = await query;
+  return rowsOrEmpty(data as Record<string, any>[] | null, error).map((r) => ({ id: r.id, name: r.full_name || r.username || "—", username: r.username, phone: r.phone, role: r.role ?? "user", merchantStatus: r.merchant_status ?? "none", createdAt: r.created_at }));
+}
+
+export async function adminSetRole(input: { userId: string; role: "user" | "merchant" | "admin" }) {
+  const { error } = await supabase.from("profiles").update({ role: input.role, merchant_status: input.role === "merchant" ? "active" : "none" }).eq("id", input.userId);
+  if (error) fail(error);
+  return true;
+}
+
+export async function adminStores(): Promise<(Store & { ownerName: string })[]> {
+  const { data, error } = await supabase.from("stores").select("*, owner:profiles!stores_owner_id_fkey(full_name, username)").order("created_at", { ascending: false }).limit(200);
+  return rowsOrEmpty(data as Record<string, any>[] | null, error).map((r) => ({ ...toStore(r), ownerName: r.owner?.full_name || r.owner?.username || "—" }));
+}
+
+export async function adminUpdateStore(input: { id: string; status?: Store["status"]; isFeatured?: boolean }) {
+  const values: Record<string, unknown> = {};
+  if (input.status) values.status = input.status;
+  if (input.isFeatured !== undefined) values.is_featured = input.isFeatured;
+  const { error } = await supabase.from("stores").update(values).eq("id", input.id);
+  if (error) fail(error);
+  return true;
+}
+
+export async function adminCategories(): Promise<(Category & { is_active: boolean })[]> {
+  const { data, error } = await supabase.from("categories").select("id, slug, name, name_ar, icon, parent_id, sort_order, is_active").not("slug", "like", "old-%").order("sort_order").order("id");
+  return rowsOrEmpty(data as (Category & { is_active: boolean })[] | null, error);
+}
+
+export async function adminSaveCategory(input: { id?: number; name: string; name_ar: string; parent_id: number | null; is_active?: boolean }) {
+  if (!input.name.trim() || !input.name_ar.trim()) throw new Error(t("اكتب الاسم بالعربية والإنجليزية."));
+  const values: Record<string, unknown> = { name: input.name.trim(), name_ar: input.name_ar.trim(), parent_id: input.parent_id };
+  if (input.is_active !== undefined) values.is_active = input.is_active;
+  const { error } = input.id
+    ? await supabase.from("categories").update(values).eq("id", input.id)
+    : await supabase.from("categories").insert({ ...values, slug: `c-${Date.now().toString(36)}`, is_active: true, sort_order: 999 });
+  if (error) fail(error);
+  invalidateCategoryCache();
+  return true;
+}
+
+export async function adminReports(): Promise<Report[]> {
+  const { data, error } = await supabase.from("report_cases").select(REPORT_SELECT).order("created_at", { ascending: false }).limit(200);
+  return rowsOrEmpty(data as Record<string, any>[] | null, error).map(toReport);
+}
+
+export async function adminUpdateReport(input: { id: string; status: "reviewing" | "resolved" | "dismissed"; resolution?: string }) {
+  const userId = await requireUserId();
+  if (input.status !== "reviewing" && !input.resolution?.trim()) throw new Error(t("اكتب ملاحظة القرار."));
+  const { error } = await supabase.from("report_cases").update({ status: input.status, reviewer_user_id: userId, resolution: input.resolution?.trim() || null }).eq("id", input.id);
+  if (error) fail(error);
+  return true;
+}
+
+export type AuditEntry = { id: number; adminName: string; action: string; table: string; targetId: string | null; changes: string[]; createdAt: string };
+
+export async function adminAuditLog(): Promise<AuditEntry[]> {
+  const { data, error } = await supabase.from("admin_audit_logs").select("*, admin:profiles!admin_audit_logs_admin_user_id_fkey(full_name, username)").order("created_at", { ascending: false }).limit(200);
+  return rowsOrEmpty(data as Record<string, any>[] | null, error).map((r) => {
+    const before = (r.before_data ?? {}) as Record<string, unknown>;
+    const after = (r.after_data ?? {}) as Record<string, unknown>;
+    const changes = Object.keys(after).filter((k) => !["updated_at", "attributes"].includes(k) && JSON.stringify(before[k]) !== JSON.stringify(after[k])).map((k) => `${k}: ${String(before[k] ?? "—")} → ${String(after[k] ?? "—")}`);
+    return { id: r.id, adminName: r.admin?.full_name || r.admin?.username || "—", action: r.action, table: r.target_table, targetId: r.target_id, changes, createdAt: r.created_at };
+  });
+}
+
+export async function adminSettings(): Promise<{ announcement: { ar: string; en: string }; autoPublish: boolean }> {
+  const { data } = await supabase.from("platform_settings").select("key, value");
+  const map = Object.fromEntries((data ?? []).map((r) => [r.key, r.value]));
+  const ann = (map.announcement ?? {}) as { ar?: string; en?: string };
+  return { announcement: { ar: ann.ar ?? "", en: ann.en ?? "" }, autoPublish: map.listing_auto_publish !== false };
+}
+
+export async function adminSaveSettings(input: { announcement: { ar: string; en: string }; autoPublish: boolean }) {
+  const { error } = await supabase.from("platform_settings").upsert([
+    { key: "announcement", value: { ar: input.announcement.ar.trim().slice(0, 300), en: input.announcement.en.trim().slice(0, 300) }, updated_at: new Date().toISOString() },
+    { key: "listing_auto_publish", value: input.autoPublish, updated_at: new Date().toISOString() },
+  ]);
+  if (error) fail(error);
+  return true;
 }

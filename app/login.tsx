@@ -1,139 +1,122 @@
-import { Alert, ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { router } from "expo-router";
 import { useState } from "react";
+import { KeyboardAvoidingView, Platform, Pressable, ScrollView, Text, View } from "react-native";
+import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { ScreenContainer } from "@/components/screen-container";
-import { IconSymbol } from "@/components/ui/icon-symbol";
+import { Button, Field, Header, Input, notify } from "@/components/market/ui";
 import { useColors } from "@/hooks/use-colors";
 import { startFacebookLogin } from "@/constants/oauth";
 import { supabase } from "@/lib/supabase";
+import { t } from "@/lib/i18n";
+import { createStyles } from "@/lib/i18n/rtl";
 
 export default function LoginScreen() {
   const colors = useColors();
-  const [loading, setLoading] = useState(false);
+  const [mode, setMode] = useState<"signin" | "signup" | "reset">("signin");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [emailLoading, setEmailLoading] = useState<"signin" | "signup" | null>(null);
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState<null | "email" | "facebook">(null);
+  const [error, setError] = useState<string | null>(null);
 
-  const finishLogin = () => (router.canGoBack() ? router.back() : router.replace("/(tabs)"));
+  const done = () => (router.canGoBack() ? router.back() : router.replace("/(tabs)"));
 
-  const loginWithEmail = async (mode: "signin" | "signup") => {
-    if (!email.trim() || password.length < 6) {
-      Alert.alert("بيانات ناقصة", "أدخل البريد الإلكتروني وكلمة مرور لا تقل عن 6 أحرف.");
-      return;
-    }
+  const submit = async () => {
+    setError(null);
+    const cleanEmail = email.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) { setError(t("اكتب بريدًا إلكترونيًا صحيحًا.")); return; }
+    if (mode !== "reset" && password.length < (mode === "signup" ? 8 : 6)) { setError(mode === "signup" ? t("كلمة المرور يجب أن تكون 8 أحرف على الأقل.") : t("اكتب كلمة المرور.")); return; }
+    if (mode === "signup" && name.trim().length < 2) { setError(t("اكتب اسمك.")); return; }
+    setBusy("email");
     try {
-      setEmailLoading(mode);
       if (mode === "signin") {
-        const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
-        if (error) throw new Error("البريد الإلكتروني أو كلمة المرور غير صحيحة.");
-        finishLogin();
+        const { error: e } = await supabase.auth.signInWithPassword({ email: cleanEmail, password });
+        if (e) throw new Error(t("البريد الإلكتروني أو كلمة المرور غير صحيحة."));
+        done();
+      } else if (mode === "signup") {
+        const { data, error: e } = await supabase.auth.signUp({ email: cleanEmail, password, options: { data: { full_name: name.trim() } } });
+        if (e) throw new Error(/registered/i.test(e.message) ? t("هذا البريد مسجّل مسبقًا. سجّل الدخول.") : t("تعذر إنشاء الحساب. حاول مرة أخرى."));
+        if (data.session) done();
+        else { notify(t("تحقق من بريدك"), t("أرسلنا رابط تفعيل إلى بريدك الإلكتروني. افتحه ثم سجّل الدخول.")); setMode("signin"); }
       } else {
-        const { data, error } = await supabase.auth.signUp({ email: email.trim(), password });
-        if (error) throw new Error(error.message);
-        if (data.session) finishLogin();
-        else Alert.alert("تحقق من بريدك", "أرسلنا رابط تفعيل إلى بريدك الإلكتروني. افتحه ثم سجّل الدخول.");
+        const { error: e } = await supabase.auth.resetPasswordForEmail(cleanEmail);
+        if (e) throw new Error(t("تعذر إرسال رابط الاستعادة."));
+        notify(t("تحقق من بريدك"), t("إذا كان البريد مسجّلًا ستصلك رسالة لإعادة تعيين كلمة المرور."));
+        setMode("signin");
       }
-    } catch (error) {
-      Alert.alert("تعذر تسجيل الدخول", error instanceof Error ? error.message : "حاول مرة أخرى.");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : t("حاول مرة أخرى."));
     } finally {
-      setEmailLoading(null);
+      setBusy(null);
     }
   };
 
-  const loginWithFacebook = async () => {
+  const facebook = async () => {
+    setBusy("facebook");
     try {
-      setLoading(true);
       await startFacebookLogin();
-      if (Platform.OS !== "web") finishLogin();
-    } catch (error) {
-      Alert.alert(
-        "تعذر تسجيل الدخول",
-        error instanceof Error ? error.message : "تحقق من اتصال الإنترنت ثم حاول مرة أخرى.",
-      );
-      setLoading(false);
+      if (Platform.OS !== "web") done();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : t("تحقق من اتصال الإنترنت ثم حاول مرة أخرى."));
+    } finally {
+      setBusy(null);
     }
   };
+
+  const title = mode === "signin" ? t("تسجيل الدخول") : mode === "signup" ? t("إنشاء حساب جديد") : t("استعادة كلمة المرور");
 
   return (
-    <ScreenContainer edges={["top", "left", "right", "bottom"]}>
-      <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-        <ScrollView contentContainerStyle={styles.content}>
-          <View style={styles.header}>
-            <Pressable onPress={() => router.back()} style={styles.closeButton}>
-              <IconSymbol name="xmark" size={22} color={colors.foreground} />
-            </Pressable>
-            <Text style={[styles.title, { color: colors.foreground }]}>تسجيل الدخول</Text>
-            <View style={styles.spacer} />
+    <ScreenContainer edges={["top", "left", "right", "bottom"]} className="px-4">
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+        <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.content}>
+          <Header title={title} />
+          <View style={[styles.logo, { backgroundColor: colors.primary }]}><MaterialIcons name="shopping-bag" size={40} color={colors.accent} /></View>
+          <Text style={[styles.heading, { color: colors.foreground }]}>{t("مرحبًا بك في دار السلع")}</Text>
+          <Text style={[styles.subtitle, { color: colors.muted }]}>{t("سجّل الدخول لحفظ إعلاناتك ومراسلة البائعين وإدارة متجرك.")}</Text>
+
+          {mode === "signup" ? <Field label={t("الاسم")} required><Input value={name} onChangeText={setName} autoComplete="name" /></Field> : null}
+          <Field label={t("البريد الإلكتروني")} required><Input value={email} onChangeText={setEmail} autoCapitalize="none" keyboardType="email-address" autoComplete="email" /></Field>
+          {mode !== "reset" ? <Field label={t("كلمة المرور")} required hint={mode === "signup" ? t("8 أحرف على الأقل.") : undefined}><Input value={password} onChangeText={setPassword} secureTextEntry autoComplete={mode === "signup" ? "new-password" : "password"} onSubmitEditing={submit} /></Field> : null}
+          {error ? <Text style={[styles.error, { color: colors.error }]}>{error}</Text> : null}
+          <Button label={mode === "signin" ? t("تسجيل الدخول") : mode === "signup" ? t("إنشاء الحساب") : t("إرسال رابط الاستعادة")} loading={busy === "email"} disabled={Boolean(busy)} onPress={submit} style={{ marginTop: 18 }} />
+
+          <View style={styles.switchRow}>
+            {mode === "signin" ? (
+              <>
+                <Pressable onPress={() => { setMode("signup"); setError(null); }}><Text style={[styles.switchText, { color: colors.primary }]}>{t("إنشاء حساب جديد")}</Text></Pressable>
+                <Pressable onPress={() => { setMode("reset"); setError(null); }}><Text style={[styles.switchText, { color: colors.muted }]}>{t("نسيت كلمة المرور؟")}</Text></Pressable>
+              </>
+            ) : <Pressable onPress={() => { setMode("signin"); setError(null); }}><Text style={[styles.switchText, { color: colors.primary }]}>{t("لديك حساب؟ سجّل الدخول")}</Text></Pressable>}
           </View>
 
-          <View style={[styles.logo, { backgroundColor: colors.primary }]}>
-            <IconSymbol name="lock.shield.fill" size={40} color="#D5B36A" />
+          <View style={styles.divider}><View style={[styles.line, { backgroundColor: colors.border }]} /><Text style={[styles.dividerText, { color: colors.muted }]}>{t("أو")}</Text><View style={[styles.line, { backgroundColor: colors.border }]} /></View>
+          <Button icon="facebook" label={t("المتابعة باستخدام Facebook")} loading={busy === "facebook"} disabled={Boolean(busy)} onPress={facebook} style={{ backgroundColor: "#1877F2", borderColor: "#1877F2" }} />
+          <View style={[styles.soon, { borderColor: colors.border }]}><Text style={[styles.soonText, { color: colors.muted }]}>{t("تسجيل الدخول عبر Google — قيد الإعداد")}</Text></View>
+          <Text style={[styles.privacy, { color: colors.muted }]}>{t("بالمتابعة، توافق على شروط الاستخدام وسياسة الخصوصية.")}</Text>
+          <View style={styles.legalRow}>
+            <Pressable onPress={() => router.push("/terms")}><Text style={[styles.legal, { color: colors.primary }]}>{t("شروط الاستخدام")}</Text></Pressable>
+            <Pressable onPress={() => router.push("/privacy-policy")}><Text style={[styles.legal, { color: colors.primary }]}>{t("سياسة الخصوصية")}</Text></Pressable>
           </View>
-          <Text style={[styles.heading, { color: colors.foreground }]}>مرحبًا بك في دار السلع</Text>
-          <Text style={[styles.subtitle, { color: colors.muted }]}>سجّل الدخول بحسابك في دار السلع لحفظ إعلاناتك والتواصل مع المستخدمين.</Text>
-
-          <View style={[styles.secureCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-            <IconSymbol name="checkmark.seal.fill" size={25} color={colors.primary} />
-            <View style={styles.secureCopy}>
-              <Text style={[styles.secureTitle, { color: colors.foreground }]}>مصادقة دار السلع</Text>
-              <Text style={[styles.secureText, { color: colors.muted }]}>يتم تسجيل الدخول عبر Supabase بأمان، ولا نطلب كلمة مرور Facebook داخل التطبيق.</Text>
-            </View>
-          </View>
-
-          <Pressable onPress={loginWithFacebook} disabled={loading} style={({ pressed }) => [styles.facebookButton, { backgroundColor: "#1877F2" }, pressed && styles.pressed]}>
-            {loading ? <ActivityIndicator color="#fff" /> : <><Text style={styles.facebookText}>المتابعة باستخدام Facebook</Text><Text style={styles.facebookF}>f</Text></>}
-          </Pressable>
-
-          <Pressable onPress={() => Alert.alert("Google", "تسجيل الدخول عبر Google قيد الإعداد وسيُفعّل بعد اكتمال إعدادات Google الرسمية.")} style={({ pressed }) => [styles.googleButton, { borderColor: colors.border, backgroundColor: colors.surface }, pressed && styles.pressed]}>
-            <Text style={[styles.googleText, { color: colors.muted }]}>Google — قيد الإعداد</Text>
-          </Pressable>
-
-          <View style={styles.dividerRow}><View style={[styles.dividerLine, { backgroundColor: colors.border }]} /><Text style={[styles.dividerText, { color: colors.muted }]}>أو بالبريد الإلكتروني</Text><View style={[styles.dividerLine, { backgroundColor: colors.border }]} /></View>
-          <TextInput value={email} onChangeText={setEmail} placeholder="البريد الإلكتروني" placeholderTextColor={colors.muted} autoCapitalize="none" keyboardType="email-address" textAlign="right" style={[styles.input, { borderColor: colors.border, backgroundColor: colors.surface, color: colors.foreground }]} />
-          <TextInput value={password} onChangeText={setPassword} placeholder="كلمة المرور" placeholderTextColor={colors.muted} secureTextEntry textAlign="right" style={[styles.input, { borderColor: colors.border, backgroundColor: colors.surface, color: colors.foreground }]} />
-          <Pressable onPress={() => loginWithEmail("signin")} disabled={emailLoading !== null} style={({ pressed }) => [styles.emailButton, { backgroundColor: colors.primary }, pressed && styles.pressed]}>
-            {emailLoading === "signin" ? <ActivityIndicator color="#fff" /> : <Text style={styles.emailButtonText}>تسجيل الدخول</Text>}
-          </Pressable>
-          <Pressable onPress={() => loginWithEmail("signup")} disabled={emailLoading !== null} style={({ pressed }) => [styles.signupButton, { borderColor: colors.primary }, pressed && styles.pressed]}>
-            {emailLoading === "signup" ? <ActivityIndicator color={colors.primary} /> : <Text style={[styles.signupText, { color: colors.primary }]}>إنشاء حساب جديد</Text>}
-          </Pressable>
-
-          <Text style={[styles.flowText, { color: colors.muted }]}>بعد الموافقة في Facebook ستعود تلقائيًا إلى تطبيق دار السلع، وتُحفظ جلسة دار السلع فقط.</Text>
-          <Text style={[styles.privacy, { color: colors.muted }]}>بالمتابعة، توافق على شروط الاستخدام وسياسة الخصوصية.</Text>
         </ScrollView>
       </KeyboardAvoidingView>
     </ScreenContainer>
   );
 }
 
-const styles = StyleSheet.create({
-  flex: { flex: 1 },
-  content: { padding: 20, paddingBottom: 42 },
-  header: { alignItems: "center", flexDirection: "row-reverse", justifyContent: "space-between" },
-  closeButton: { alignItems: "center", borderRadius: 18, height: 36, justifyContent: "center", width: 36 },
-  spacer: { width: 36 },
-  title: { fontSize: 19, fontWeight: "900" },
-  logo: { alignItems: "center", alignSelf: "center", borderRadius: 28, height: 82, justifyContent: "center", marginTop: 36, width: 82 },
-  heading: { fontSize: 24, fontWeight: "900", marginTop: 18, textAlign: "center" },
-  subtitle: { fontSize: 13, lineHeight: 21, marginTop: 8, textAlign: "center" },
-  secureCard: { alignItems: "center", borderRadius: 16, borderWidth: 1, flexDirection: "row-reverse", gap: 12, marginTop: 28, padding: 15 },
-  secureCopy: { flex: 1 },
-  secureTitle: { fontSize: 14, fontWeight: "900", textAlign: "right" },
-  secureText: { fontSize: 11, lineHeight: 18, marginTop: 4, textAlign: "right" },
-  facebookButton: { alignItems: "center", borderRadius: 14, flexDirection: "row-reverse", height: 56, justifyContent: "center", marginTop: 22, paddingHorizontal: 18 },
-  facebookText: { color: "#fff", fontSize: 15, fontWeight: "800" },
-  facebookF: { color: "#fff", fontSize: 25, fontWeight: "900", marginLeft: 12 },
-  googleButton: { alignItems: "center", borderRadius: 14, borderWidth: 1, height: 52, justifyContent: "center", marginTop: 12, paddingHorizontal: 18 },
-  googleText: { fontSize: 14, fontWeight: "700" },
-  flowText: { fontSize: 12, lineHeight: 20, marginTop: 20, textAlign: "center" },
-  privacy: { fontSize: 10, lineHeight: 17, marginTop: 18, textAlign: "center" },
-  dividerRow: { alignItems: "center", flexDirection: "row", gap: 10, marginTop: 22 },
-  dividerLine: { flex: 1, height: 1 },
+const styles = createStyles({
+  content: { paddingBottom: 40 },
+  logo: { alignItems: "center", alignSelf: "center", borderRadius: 28, height: 82, justifyContent: "center", marginTop: 12, width: 82 },
+  heading: { fontSize: 23, fontWeight: "900", marginTop: 16, textAlign: "center" },
+  subtitle: { fontSize: 13, lineHeight: 21, marginTop: 6, textAlign: "center" },
+  error: { fontSize: 13, fontWeight: "700", marginTop: 12, textAlign: "right" },
+  switchRow: { flexDirection: "row-reverse", justifyContent: "space-between", marginTop: 14 },
+  switchText: { fontSize: 13, fontWeight: "800" },
+  divider: { alignItems: "center", flexDirection: "row", gap: 10, marginVertical: 20 },
+  line: { flex: 1, height: 1 },
   dividerText: { fontSize: 12, fontWeight: "700" },
-  input: { borderRadius: 14, borderWidth: 1, fontSize: 15, height: 52, marginTop: 12, paddingHorizontal: 16 },
-  emailButton: { alignItems: "center", borderRadius: 14, height: 54, justifyContent: "center", marginTop: 14 },
-  emailButtonText: { color: "#fff", fontSize: 15, fontWeight: "900" },
-  signupButton: { alignItems: "center", borderRadius: 14, borderWidth: 1.5, height: 50, justifyContent: "center", marginTop: 10 },
-  signupText: { fontSize: 14, fontWeight: "800" },
-  pressed: { opacity: 0.72, transform: [{ scale: 0.98 }] },
+  soon: { alignItems: "center", borderRadius: 14, borderWidth: 1, marginTop: 10, paddingVertical: 14 },
+  soonText: { fontSize: 13, fontWeight: "700" },
+  privacy: { fontSize: 11, lineHeight: 17, marginTop: 18, textAlign: "center" },
+  legalRow: { flexDirection: "row", gap: 18, justifyContent: "center", marginTop: 6 },
+  legal: { fontSize: 12, fontWeight: "800" },
 });

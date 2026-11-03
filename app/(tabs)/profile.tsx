@@ -1,86 +1,138 @@
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useState } from "react";
 import { router } from "expo-router";
+import { Image, Pressable, ScrollView, Text, View } from "react-native";
+import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { ScreenContainer } from "@/components/screen-container";
-import { IconSymbol } from "@/components/ui/icon-symbol";
-import { useColors } from "@/hooks/use-colors";
+import { Header, confirmAction, notify } from "@/components/market/ui";
 import { useAuth } from "@/hooks/use-auth";
-import { trpc } from "@/lib/trpc";
-const menu = [
-  { label: "إعلاناتي", icon: "list.bullet.rectangle.fill" as const, detail: "إدارة إعلاناتك" },
-  { label: "المسودات", icon: "doc.text.fill" as const, detail: "استئناف المسودات المحفوظة" },
-  { label: "الإعلانات المفضلة", icon: "heart.fill" as const, detail: "الإعلانات المحفوظة في حسابك" },
-  { label: "آخر المشاهدات", icon: "clock.fill" as const, detail: "الإعلانات التي فتحتها مؤخرًا" },
-  { label: "الرسائل", icon: "bubble.left.and.bubble.right.fill" as const, detail: "تواصل مع المعلنين" },
-  { label: "الإشعارات", icon: "bell.fill" as const, detail: "آخر التنبيهات" },
-  { label: "الإعدادات", icon: "gearshape.fill" as const, detail: "الحساب والخصوصية" },
-  { label: "مركز المساعدة", icon: "questionmark.circle.fill" as const, detail: "الدعم والبلاغات ونصائح الأمان" },
-];
+import { useColors } from "@/hooks/use-colors";
+import { deleteAccount, friendlyError } from "@/lib/data";
+import { isRTL, t, useLanguage } from "@/lib/i18n";
+import { useUnreadCounts } from "@/lib/queries";
+import { createStyles } from "@/lib/i18n/rtl";
+
+type IconName = keyof typeof MaterialIcons.glyphMap;
+type Item = { label: string; detail: string; icon: IconName; route: string; badge?: number; auth?: boolean };
+
 export default function ProfileScreen() {
   const colors = useColors();
   const { user, isAuthenticated, logout } = useAuth();
+  const { lang, setLang } = useLanguage();
+  const unread = useUnreadCounts();
   const [deleting, setDeleting] = useState(false);
-  const deleteAccountMutation = trpc.auth.deleteAccount.useMutation();
-  const handleLogout = () => {
-    Alert.alert("إدارة الجلسة", "هل تريد تسجيل الخروج من هذا الحساب على هذا الجهاز؟", [
-      { text: "إلغاء", style: "cancel" },
-      { text: "تسجيل الخروج", style: "destructive", onPress: logout },
-    ]);
-  };
-  const handleDeleteAccount = () => {
-    Alert.alert(
-      "حذف الحساب",
-      "سيتم إخفاء بيانات حسابك وإعلاناتك العامة وإلغاء اشتراكاتك. لا يمكن التراجع عن هذا الإجراء.",
-      [
-        { text: "إلغاء", style: "cancel" },
-        {
-          text: "حذف الحساب",
-          style: "destructive",
-          onPress: async () => {
-            try {
-              setDeleting(true);
-              await deleteAccountMutation.mutateAsync();
-              await logout();
-              router.replace("/login");
-            } catch {
-              Alert.alert("تعذر حذف الحساب", "حاول مرة أخرى بعد التحقق من اتصال الإنترنت.");
-            } finally {
-              setDeleting(false);
-            }
-          },
-        },
-      ],
-    );
-  };
+
+  const account: Item[] = [
+    { label: "إعلاناتي", detail: "النشطة والمسودات والمراجعة", icon: "view-list", route: "/(tabs)/myads", auth: true },
+    { label: "متجري", detail: "واجهة المتجر والمنتجات", icon: "storefront", route: "/store/manage", auth: true },
+    { label: "الرسائل", detail: "محادثاتك مع البائعين والمشترين", icon: "chat", route: "/(tabs)/messages", badge: unread.messages, auth: true },
+    { label: "الإشعارات", detail: "الرسائل وقرارات المراجعة", icon: "notifications", route: "/notifications", badge: unread.notifications, auth: true },
+    { label: "المفضلة", detail: "الإعلانات المحفوظة", icon: "favorite", route: "/(tabs)/favorites", auth: true },
+    { label: "آخر المشاهدات", detail: "الإعلانات التي فتحتها مؤخرًا", icon: "history", route: "/recent-views", auth: true },
+    { label: "الملف الشخصي والأمان", detail: "الاسم والهاتف وكلمة المرور", icon: "manage-accounts", route: "/settings", auth: true },
+  ];
+  const help: Item[] = [
+    { label: "مركز المساعدة", detail: "الأسئلة الشائعة والتواصل مع الدعم", icon: "help-outline", route: "/help-center" },
+    { label: "نصائح الأمان", detail: "كيف تبيع وتشتري بأمان", icon: "shield", route: "/safety" },
+    { label: "شروط الاستخدام", detail: "قواعد استخدام دار السلع", icon: "description", route: "/terms" },
+    { label: "سياسة الخصوصية", detail: "كيف نحمي بياناتك", icon: "lock", route: "/privacy-policy" },
+  ];
+  if (user?.role === "admin") account.unshift({ label: "لوحة المشرف", detail: "الإدارة والمراجعة والبلاغات", icon: "admin-panel-settings", route: "/admin", auth: true });
+
+  const handleDelete = () => confirmAction(
+    t("طلب حذف الحساب"),
+    t("ستُحذف إعلاناتك وصورك ومفضلتك وتُمسح بيانات ملفك، ثم تُسجَّل خروجك. لا يمكن التراجع."),
+    t("حذف الحساب"),
+    async () => {
+      try {
+        setDeleting(true);
+        await deleteAccount();
+        router.replace("/(tabs)");
+        notify(t("تم حذف بيانات حسابك"), t("لإزالة بيانات الدخول نهائيًا تواصل مع الدعم."));
+      } catch (e) {
+        notify(t("تعذر حذف الحساب"), friendlyError(e));
+      } finally {
+        setDeleting(false);
+      }
+    },
+    true,
+  );
+
+  const renderItems = (items: Item[]) => (
+    <View style={[styles.menuCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+      {items.filter((i) => !i.auth || isAuthenticated).map((item) => (
+        <Pressable key={item.label} onPress={() => router.push(item.route as never)} style={({ pressed }) => [styles.menuItem, { borderBottomColor: colors.border, opacity: pressed ? 0.65 : 1 }]}>
+          <MaterialIcons name={item.icon} size={22} color={colors.primary} />
+          <View style={styles.menuCopy}><Text style={[styles.menuLabel, { color: colors.foreground }]}>{t(item.label)}</Text><Text style={[styles.menuDetail, { color: colors.muted }]}>{t(item.detail)}</Text></View>
+          {item.badge ? <View style={[styles.badge, { backgroundColor: colors.accent }]}><Text style={styles.badgeText}>{item.badge}</Text></View> : null}
+          <MaterialIcons name={isRTL() ? "chevron-left" : "chevron-right"} size={20} color={colors.muted} />
+        </Pressable>
+      ))}
+    </View>
+  );
+
   return (
     <ScreenContainer className="px-4">
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.content}>
-        <Text style={[styles.title, { color: colors.foreground }]}>حسابي</Text>
+        <Header back={false} title={t("حسابي")} />
         <View style={[styles.profileCard, { backgroundColor: colors.primary }]}>
-          <View style={styles.avatar}><IconSymbol name="person.fill" size={30} color={colors.primary} /></View>
-          <View style={styles.profileText}><Text style={styles.welcome}>{isAuthenticated ? `مرحبًا ${user?.name || "بك"}` : "مرحبًا بك في دار السلع"}</Text><Text style={styles.profileHint}>{isAuthenticated ? user?.email || "حسابك موثّق" : "سجّل الدخول لإدارة إعلاناتك"}</Text></View>
-          <Pressable onPress={() => isAuthenticated ? logout() : router.push("/login")} style={styles.loginButton}><Text style={[styles.loginText, { color: colors.primary }]}>{isAuthenticated ? "خروج" : "دخول"}</Text></Pressable>
-        </View>
-        <Text style={[styles.sectionTitle, { color: colors.foreground }]}>إدارة الحساب</Text>
-        <View style={[styles.menuCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>{menu.map((item) => <Pressable key={item.label} onPress={() => item.label === "إعلاناتي" || item.label === "المسودات" ? router.push("/(tabs)/myads") : item.label === "الإعلانات المفضلة" ? router.push("/(tabs)/favorites") : item.label === "آخر المشاهدات" ? router.push("/recent-views" as never) : item.label === "الإشعارات" ? router.push("/notifications" as never) : item.label === "مركز المساعدة" ? router.push("/help-center" as never) : Alert.alert(item.label, item.detail)} style={({ pressed }) => [styles.menuItem, { borderBottomColor: colors.border }, pressed && { opacity: 0.65 }]}><IconSymbol name={item.icon} size={22} color={colors.primary} /><View style={styles.menuCopy}><Text style={[styles.menuLabel, { color: colors.foreground }]}>{item.label}</Text><Text style={[styles.menuDetail, { color: colors.muted }]}>{item.detail}</Text></View><IconSymbol name="chevron.right" size={18} color={colors.muted} /></Pressable>)}</View>
-        <Text style={[styles.sectionTitle, { color: colors.foreground }]}>الخصوصية والحساب</Text>
-        <View style={[styles.menuCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-          <Pressable onPress={() => router.push("/privacy-policy" as never)} style={({ pressed }) => [styles.menuItem, { borderBottomColor: colors.border }, pressed && { opacity: 0.65 }]}>
-            <IconSymbol name="lock.shield.fill" size={22} color={colors.primary} /><View style={styles.menuCopy}><Text style={[styles.menuLabel, { color: colors.foreground }]}>سياسة الخصوصية</Text><Text style={[styles.menuDetail, { color: colors.muted }]}>كيف نحمي بياناتك</Text></View><IconSymbol name="chevron.right" size={18} color={colors.muted} />
-          </Pressable>
-          <Pressable onPress={() => router.push("/terms" as never)} style={({ pressed }) => [styles.menuItem, { borderBottomColor: colors.border }, pressed && { opacity: 0.65 }]}>
-            <IconSymbol name="doc.text.fill" size={22} color={colors.primary} /><View style={styles.menuCopy}><Text style={[styles.menuLabel, { color: colors.foreground }]}>شروط الاستخدام</Text><Text style={[styles.menuDetail, { color: colors.muted }]}>قواعد استخدام دار السلع</Text></View><IconSymbol name="chevron.right" size={18} color={colors.muted} />
+          {user?.avatarUrl ? <Image source={{ uri: user.avatarUrl }} style={styles.avatar} /> : <View style={[styles.avatar, { backgroundColor: colors.surface }]}><MaterialIcons name="person" size={30} color={colors.primary} /></View>}
+          <View style={styles.profileText}>
+            <Text style={styles.welcome}>{isAuthenticated ? t("مرحبًا {name}", { name: user?.name || "" }) : t("مرحبًا بك في دار السلع")}</Text>
+            <Text style={styles.profileHint}>{isAuthenticated ? user?.email || user?.phone || "" : t("سجّل الدخول لإدارة إعلاناتك")}</Text>
+          </View>
+          <Pressable onPress={() => (isAuthenticated ? router.push("/settings") : router.push("/login"))} style={[styles.loginButton, { backgroundColor: colors.accent }]}>
+            <Text style={styles.loginText}>{isAuthenticated ? t("تعديل") : t("دخول")}</Text>
           </Pressable>
         </View>
-        {isAuthenticated && <Pressable onPress={handleLogout} style={({ pressed }) => [styles.sessionButton, pressed && { opacity: 0.65 }]}><Text style={[styles.sessionText, { color: colors.primary }]}>إدارة الجلسة الحالية • تسجيل الخروج</Text></Pressable>}
-        {isAuthenticated && <Pressable disabled={deleting} onPress={handleDeleteAccount} style={({ pressed }) => [styles.deleteButton, pressed && { opacity: 0.65 }]}><Text style={styles.deleteText}>{deleting ? "جارٍ حذف الحساب..." : "حذف الحساب"}</Text></Pressable>}
-        <Text style={[styles.version, { color: colors.muted }]}>دار السلع • الإصدار 1.0.0</Text>
+
+        <Text style={[styles.sectionTitle, { color: colors.foreground }]}>{t("اللغة")}</Text>
+        <View style={[styles.langRow, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+          {(["ar", "en"] as const).map((code) => (
+            <Pressable key={code} accessibilityRole="button" accessibilityState={{ selected: lang === code }} onPress={() => void setLang(code)} style={[styles.langOption, lang === code && { backgroundColor: colors.primary }]}>
+              <Text style={[styles.langText, { color: lang === code ? colors.primaryText : colors.foreground }]}>{code === "ar" ? "العربية" : "English"}</Text>
+            </Pressable>
+          ))}
+        </View>
+
+        {isAuthenticated ? <><Text style={[styles.sectionTitle, { color: colors.foreground }]}>{t("إدارة الحساب")}</Text>{renderItems(account)}</> : null}
+        <Text style={[styles.sectionTitle, { color: colors.foreground }]}>{t("المساعدة والقوانين")}</Text>
+        {renderItems(help)}
+
+        {isAuthenticated ? (
+          <>
+            <Pressable onPress={() => confirmAction(t("تسجيل الخروج"), t("هل تريد تسجيل الخروج من هذا الجهاز؟"), t("تسجيل الخروج"), () => void logout())} style={[styles.sessionButton, { borderColor: colors.accent }]}><Text style={[styles.sessionText, { color: colors.primary }]}>{t("تسجيل الخروج")}</Text></Pressable>
+            <Pressable disabled={deleting} onPress={handleDelete} style={[styles.deleteButton, { borderColor: colors.error }]}><Text style={[styles.deleteText, { color: colors.error }]}>{deleting ? t("جارٍ الحذف...") : t("طلب حذف الحساب")}</Text></Pressable>
+          </>
+        ) : null}
+        <Text style={[styles.version, { color: colors.muted }]}>{t("دار السلع • الإصدار 1.1.0")}</Text>
       </ScrollView>
     </ScreenContainer>
   );
 }
-const styles = StyleSheet.create({ content: { paddingBottom: 30 }, title: { fontSize: 28, fontWeight: "900", marginTop: 14, textAlign: "right" }, profileCard: { alignItems: "center", borderRadius: 20, flexDirection: "row-reverse", marginTop: 20, padding: 16 }, avatar: { alignItems: "center", backgroundColor: "#FFF9F4", borderRadius: 28, height: 56, justifyContent: "center", width: 56 }, profileText: { flex: 1, marginHorizontal: 12 }, welcome: { color: "#FFFFFF", fontSize: 14, fontWeight: "900", textAlign: "right" }, profileHint: { color: "#FFFFFFCC", fontSize: 11, marginTop: 5, textAlign: "right" }, loginButton: { backgroundColor: "#FFF9F4", borderRadius: 12, paddingHorizontal: 14, paddingVertical: 9 }, loginText: { fontSize: 13, fontWeight: "900" }, sectionTitle: { fontSize: 18, fontWeight: "800", marginBottom: 10, marginTop: 28, textAlign: "right" }, menuCard: { borderRadius: 17, borderWidth: 1, overflow: "hidden" }, menuItem: { alignItems: "center", borderBottomWidth: 1, flexDirection: "row", gap: 12, minHeight: 67, paddingHorizontal: 14 }, menuCopy: { flex: 1 }, menuLabel: { fontSize: 14, fontWeight: "800", textAlign: "right" }, menuDetail: { fontSize: 11, marginTop: 4, textAlign: "right" },   sessionButton: { alignItems: "center", borderColor: "#D5B36A", borderRadius: 13, borderWidth: 1, marginTop: 22, paddingVertical: 13 },
-  sessionText: { fontSize: 13, fontWeight: "800" },
-  deleteButton: { alignItems: "center", borderColor: "#C2413B", borderRadius: 13, borderWidth: 1, marginTop: 12, paddingVertical: 13 },
-  deleteText: { color: "#C2413B", fontSize: 14, fontWeight: "900" },
-  version: { fontSize: 11, marginTop: 25, textAlign: "center" }, });
+
+const styles = createStyles({
+  content: { paddingBottom: 30 },
+  profileCard: { alignItems: "center", borderRadius: 20, flexDirection: "row-reverse", marginTop: 8, padding: 16 },
+  avatar: { alignItems: "center", borderRadius: 28, height: 56, justifyContent: "center", width: 56 },
+  profileText: { flex: 1, marginHorizontal: 12 },
+  welcome: { color: "#FFFFFF", fontSize: 15, fontWeight: "900", textAlign: "right" },
+  profileHint: { color: "#FFFFFFCC", fontSize: 11, marginTop: 5, textAlign: "right" },
+  loginButton: { borderRadius: 12, paddingHorizontal: 14, paddingVertical: 9 },
+  loginText: { color: "#0B1F17", fontSize: 13, fontWeight: "900" },
+  sectionTitle: { fontSize: 17, fontWeight: "900", marginBottom: 10, marginTop: 24, textAlign: "right" },
+  langRow: { borderRadius: 14, borderWidth: 1, flexDirection: "row-reverse", gap: 6, padding: 5 },
+  langOption: { alignItems: "center", borderRadius: 10, flex: 1, paddingVertical: 11 },
+  langText: { fontSize: 14, fontWeight: "900" },
+  menuCard: { borderRadius: 17, borderWidth: 1, overflow: "hidden" },
+  menuItem: { alignItems: "center", borderBottomWidth: 1, flexDirection: "row-reverse", gap: 12, minHeight: 64, paddingHorizontal: 14 },
+  menuCopy: { flex: 1 },
+  menuLabel: { fontSize: 14, fontWeight: "800", textAlign: "right" },
+  menuDetail: { fontSize: 11, marginTop: 3, textAlign: "right" },
+  badge: { alignItems: "center", borderRadius: 10, height: 20, justifyContent: "center", minWidth: 20, paddingHorizontal: 5 },
+  badgeText: { color: "#0B1F17", fontSize: 11, fontWeight: "900" },
+  sessionButton: { alignItems: "center", borderRadius: 13, borderWidth: 1, marginTop: 22, paddingVertical: 13 },
+  sessionText: { fontSize: 14, fontWeight: "800" },
+  deleteButton: { alignItems: "center", borderRadius: 13, borderWidth: 1, marginTop: 10, paddingVertical: 13 },
+  deleteText: { fontSize: 14, fontWeight: "900" },
+  version: { fontSize: 11, marginTop: 25, textAlign: "center" },
+});

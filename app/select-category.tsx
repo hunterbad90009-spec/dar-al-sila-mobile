@@ -1,61 +1,81 @@
-import { useMemo, useState } from "react";
-import { Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { router } from "expo-router";
-
+import { useMemo, useState } from "react";
+import { Pressable, ScrollView, Text, View } from "react-native";
+import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { ScreenContainer } from "@/components/screen-container";
-import { IconSymbol } from "@/components/ui/icon-symbol";
+import { ErrorState, Header, Input, Loading } from "@/components/market/ui";
 import { useColors } from "@/hooks/use-colors";
+import { useColorScheme } from "@/hooks/use-color-scheme";
+import { categoryStyle } from "@/lib/category-icons";
+import { isRTL, pickName, t } from "@/lib/i18n";
+import { useCategories } from "@/lib/queries";
+import { createStyles } from "@/lib/i18n/rtl";
 
-const categories = [
-  { label: "سيارات ومركبات", icon: "https://images.unsplash.com/photo-1492144534655-ae79c964c9d7?auto=format&fit=crop&w=160&q=80" },
-  { label: "عقارات للبيع", icon: "https://images.unsplash.com/photo-1600585154340-be6161a56a0c?auto=format&fit=crop&w=160&q=80" },
-  { label: "عقارات للإيجار", icon: "https://images.unsplash.com/photo-1560185008-b033106af5c3?auto=format&fit=crop&w=160&q=80" },
-  { label: "ألعاب وألعاب الفيديو", icon: "https://images.unsplash.com/photo-1606144042614-b2417e99c4e3?auto=format&fit=crop&w=160&q=80" },
-  { label: "أجهزة إلكترونية وأجهزة منزلية", icon: "https://images.unsplash.com/photo-1593784991095-a205069470b6?auto=format&fit=crop&w=160&q=80" },
-  { label: "منزل وحدائق", icon: "https://images.unsplash.com/photo-1555041469-a586c61ea9bc?auto=format&fit=crop&w=160&q=80" },
-  { label: "موضة وأطفال", icon: "https://images.unsplash.com/photo-1519238263530-99bdd11df2ea?auto=format&fit=crop&w=160&q=80" },
-  { label: "جمال وصحة", icon: "https://images.unsplash.com/photo-1596462502278-27bfdc403348?auto=format&fit=crop&w=160&q=80" },
-  { label: "طعام - غذاء", icon: "https://images.unsplash.com/photo-1568901346375-23c9450c58cd?auto=format&fit=crop&w=160&q=80" },
-  { label: "الخدمات", icon: "https://images.unsplash.com/photo-1581578731548-c64695cc6952?auto=format&fit=crop&w=160&q=80" },
-  { label: "وظائف", icon: "https://images.unsplash.com/photo-1521737711867-e3b97375f902?auto=format&fit=crop&w=160&q=80" },
-  { label: "حيوانات وإكسسوارات", icon: "https://images.unsplash.com/photo-1546182990-dffeafbe841d?auto=format&fit=crop&w=160&q=80" },
-  { label: "ترفيه وكتب ومقتنيات", icon: "https://images.unsplash.com/photo-1516280440614-37939bbacd81?auto=format&fit=crop&w=160&q=80" },
-  { label: "معدات رياضية ولياقة", icon: "https://images.unsplash.com/photo-1534438327276-14e5300c3a48?auto=format&fit=crop&w=160&q=80" },
-  { label: "تجهيزات ومعدات الشركات", icon: "https://images.unsplash.com/photo-1581091226825-a6a2a5aee158?auto=format&fit=crop&w=160&q=80" },
-];
-
+/** Step 1 of creating a listing: drill down the category tree, then open the form. */
 export default function SelectCategoryScreen() {
   const colors = useColors();
+  const scheme = useColorScheme();
+  const categories = useCategories();
+  const [path, setPath] = useState<number[]>([]);
   const [query, setQuery] = useState("");
-  const filtered = useMemo(() => categories.filter((item) => item.label.includes(query.trim())), [query]);
-  const choose = (category: string) => {
-    router.push({ pathname: "/image-upload", params: { category } });
+  const parentId = path[path.length - 1] ?? null;
+
+  const options = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (q) return categories.all.filter((c) => `${c.name_ar} ${c.name}`.toLowerCase().includes(q)).slice(0, 40);
+    return categories.childrenOf(parentId);
+  }, [categories, parentId, query]);
+
+  const choose = (id: number) => {
+    if (!query && categories.childrenOf(id).length) { setPath([...path, id]); return; }
+    router.replace({ pathname: "/(tabs)/post", params: { categoryId: String(id) } });
   };
+
+  const parent = categories.byId(parentId);
 
   return (
     <ScreenContainer className="px-4">
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.content}>
-        <View style={styles.closeRow}><Pressable onPress={() => router.back()}><IconSymbol name="xmark" size={30} color={colors.foreground} /></Pressable></View>
-        <Text style={[styles.title, { color: colors.foreground }]}>ما الذي تود بيعه او الإعلان عنه؟</Text>
-        <Text style={[styles.subtitle, { color: colors.muted }]}>اختر القسم المناسب لإضافة الإعلان</Text>
-        <View style={[styles.search, { backgroundColor: colors.surface, borderColor: colors.border }]}><TextInput value={query} onChangeText={setQuery} placeholder="إبحث في القسم" placeholderTextColor={colors.muted} style={[styles.searchInput, { color: colors.foreground }]} textAlign="right" /><IconSymbol name="magnifyingglass" size={26} color={colors.muted} /></View>
-        <View style={styles.cards}>{filtered.map((item) => <Pressable key={item.label} onPress={() => choose(item.label)} style={({ pressed }) => [styles.card, { backgroundColor: colors.surface, borderColor: colors.border }, pressed && { opacity: 0.7, transform: [{ scale: 0.99 }] }]}><IconSymbol name="chevron.left" size={27} color={colors.foreground} /><Text style={[styles.cardText, { color: colors.foreground }]}>{item.label}</Text><Image source={{ uri: item.icon }} style={styles.cardImage} /></Pressable>)}</View>
-        {filtered.length === 0 && <Text style={[styles.empty, { color: colors.muted }]}>لا توجد أقسام مطابقة للبحث</Text>}
+      <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={styles.content}>
+        <Header title={parent ? pickName(parent) : t("ما الذي تود بيعه أو الإعلان عنه؟")} subtitle={t("اختر القسم المناسب لإضافة الإعلان")} />
+        {path.length ? <Pressable onPress={() => setPath(path.slice(0, -1))} style={styles.back}><MaterialIcons name={isRTL() ? "arrow-forward" : "arrow-back"} size={18} color={colors.primary} /><Text style={[styles.backText, { color: colors.primary }]}>{t("القسم السابق")}</Text></Pressable> : null}
+        <Input value={query} onChangeText={setQuery} placeholder={t("ابحث في الأقسام")} style={{ marginTop: 10 }} />
+        {parent && !query ? (
+          <Pressable onPress={() => router.replace({ pathname: "/(tabs)/post", params: { categoryId: String(parent.id) } })} style={[styles.card, { backgroundColor: colors.accentSoft, borderColor: colors.accent }]}>
+            <Text style={[styles.cardText, { color: colors.foreground }]}>{t("أضف في: {name}", { name: pickName(parent) })}</Text>
+            <MaterialIcons name="check-circle" size={24} color={colors.primary} />
+          </Pressable>
+        ) : null}
+        {categories.isLoading ? <Loading /> : categories.isError ? <ErrorState onRetry={() => categories.refetch()} /> : (
+          <View style={styles.cards}>
+            {options.map((item) => {
+              const style = categoryStyle(categories.topOf(item.id)?.slug);
+              const drill = !query && categories.childrenOf(item.id).length > 0;
+              const top = categories.topOf(item.id);
+              return (
+                <Pressable key={item.id} onPress={() => choose(item.id)} style={({ pressed }) => [styles.card, { backgroundColor: colors.surface, borderColor: colors.border, opacity: pressed ? 0.75 : 1 }]}>
+                  <View style={[styles.icon, { backgroundColor: scheme === "dark" ? colors.surfaceAlt : style.tint }]}><MaterialIcons name={style.icon} size={26} color={colors.primary} /></View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.cardText, { color: colors.foreground }]}>{pickName(item)}</Text>
+                    {query && top && top.id !== item.id ? <Text style={[styles.cardHint, { color: colors.muted }]}>{pickName(top)}</Text> : null}
+                  </View>
+                  <MaterialIcons name={drill ? (isRTL() ? "chevron-left" : "chevron-right") : "add-circle-outline"} size={24} color={colors.muted} />
+                </Pressable>
+              );
+            })}
+          </View>
+        )}
       </ScrollView>
     </ScreenContainer>
   );
 }
 
-const styles = StyleSheet.create({
-  content: { paddingBottom: 28 },
-  closeRow: { alignItems: "flex-start", paddingTop: 10 },
-  title: { fontSize: 27, fontWeight: "900", marginTop: 38, textAlign: "right" },
-  subtitle: { fontSize: 15, marginTop: 8, textAlign: "right" },
-  search: { alignItems: "center", borderRadius: 15, borderWidth: 1, flexDirection: "row-reverse", gap: 10, marginTop: 26, minHeight: 58, paddingHorizontal: 16 },
-  searchInput: { flex: 1, fontSize: 16 },
-  cards: { gap: 14, marginTop: 18 },
-  card: { alignItems: "center", borderRadius: 17, borderWidth: 1, flexDirection: "row", justifyContent: "space-between", minHeight: 124, paddingHorizontal: 19 },
-  cardImage: { borderRadius: 14, height: 70, width: 84 },
-  cardText: { flex: 1, fontSize: 20, fontWeight: "900", marginHorizontal: 13, textAlign: "center" },
-  empty: { fontSize: 15, marginTop: 40, textAlign: "center" },
+const styles = createStyles({
+  content: { paddingBottom: 30 },
+  back: { alignItems: "center", alignSelf: "flex-end", flexDirection: "row-reverse", gap: 4, marginTop: 4 },
+  backText: { fontSize: 13, fontWeight: "800" },
+  cards: { gap: 10, marginTop: 14 },
+  card: { alignItems: "center", borderRadius: 16, borderWidth: 1, flexDirection: "row-reverse", gap: 12, marginTop: 4, minHeight: 72, paddingHorizontal: 14 },
+  icon: { alignItems: "center", borderRadius: 14, height: 48, justifyContent: "center", width: 48 },
+  cardText: { fontSize: 16, fontWeight: "900", textAlign: "right" },
+  cardHint: { fontSize: 11, marginTop: 3, textAlign: "right" },
 });

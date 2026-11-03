@@ -1,13 +1,8 @@
+type Swatch = { light: string; dark: string };
 export const themeColors: {
-  primary: { light: string; dark: string };
-  background: { light: string; dark: string };
-  surface: { light: string; dark: string };
-  foreground: { light: string; dark: string };
-  muted: { light: string; dark: string };
-  border: { light: string; dark: string };
-  success: { light: string; dark: string };
-  warning: { light: string; dark: string };
-  error: { light: string; dark: string };
+  primary: Swatch; primaryText: Swatch; accent: Swatch; accentSoft: Swatch;
+  background: Swatch; surface: Swatch; surfaceAlt: Swatch; foreground: Swatch;
+  muted: Swatch; border: Swatch; success: Swatch; warning: Swatch; error: Swatch;
 };
 
 declare const themeConfig: {

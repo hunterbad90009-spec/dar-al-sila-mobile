@@ -1,36 +1,157 @@
-import { useEffect, useState } from "react";
-import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
-import { router, useLocalSearchParams } from "expo-router";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import * as ImagePicker from "expo-image-picker";
+import { router } from "expo-router";
+import { useEffect, useMemo, useState } from "react";
+import { Image, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { ScreenContainer } from "@/components/screen-container";
+import { Button, Card, Chip, Field, Header, Input, Loading, LoginRequired, SelectField, SelectSheet, notify } from "@/components/market/ui";
+import { useAuth } from "@/hooks/use-auth";
 import { useColors } from "@/hooks/use-colors";
-import { trpc } from "@/lib/trpc";
+import { friendlyError, getMyListings, getMyStore, listConversations, saveMyStore, type StoreType, uploadImage } from "@/lib/data";
+import { formatNumber, pickName, t } from "@/lib/i18n";
+import { prepareImageDataUrl } from "@/lib/prepare-image-data-url";
+import { keys, useLocations } from "@/lib/queries";
+import { STORE_TYPES } from "@/lib/store-types";
+import { createStyles } from "@/lib/i18n/rtl";
 
-const emptyForm = { title: "", description: "", category: "", price: "", location: "مسقط", phone: "" };
-
-export default function StoreManageScreen() {
+/** Store owner dashboard (spec 4.7): profile, images, availability, products, inquiries. */
+export default function ManageStoreScreen() {
   const colors = useColors();
-  const { publicId } = useLocalSearchParams<{ publicId?: string }>();
-  const utils = trpc.useUtils();
-  const products = trpc.stores.myProducts.useQuery();
-  const createProduct = trpc.stores.createProduct.useMutation({ onSuccess: () => { void utils.stores.myProducts.invalidate(); setForm(emptyForm); Alert.alert("تم الحفظ", "أضيف المنتج إلى متجرِك وأرسل للمراجعة."); } });
-  const updateProduct = trpc.stores.updateProduct.useMutation({ onSuccess: () => { void utils.stores.myProducts.invalidate(); setEditingId(undefined); setForm(emptyForm); Alert.alert("تم التحديث", "أعيد إرسال المنتج للمراجعة."); } });
-  const deleteProduct = trpc.stores.deleteProduct.useMutation({ onSuccess: () => void utils.stores.myProducts.invalidate() });
-  const [form, setForm] = useState(emptyForm);
-  const [editingId, setEditingId] = useState<string | undefined>(publicId);
-  const editingProduct = products.data?.find((product) => product.publicId === editingId);
+  const client = useQueryClient();
+  const { isAuthenticated, loading } = useAuth();
+  const locations = useLocations();
+  const store = useQuery({ queryKey: keys.myStore, queryFn: getMyStore, enabled: isAuthenticated });
+  const products = useQuery({ queryKey: keys.myListings, queryFn: getMyListings, enabled: isAuthenticated });
+  const inquiries = useQuery({ queryKey: keys.conversations, queryFn: listConversations, enabled: isAuthenticated });
+
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [phone, setPhone] = useState("");
+  const [whatsapp, setWhatsapp] = useState("");
+  const [storeType, setStoreType] = useState<StoreType>("small_shop");
+  const [locationId, setLocationId] = useState<number | null>(null);
+  const [logoUrl, setLogoUrl] = useState<string | null>(null);
+  const [coverUrl, setCoverUrl] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [uploading, setUploading] = useState<null | "logo" | "cover">(null);
+  const [locationSheet, setLocationSheet] = useState(false);
 
   useEffect(() => {
-    if (editingProduct) setForm({ title: editingProduct.title ?? "", description: editingProduct.description ?? "", category: editingProduct.category ?? "", price: editingProduct.price ?? "", location: editingProduct.location ?? "مسقط", phone: editingProduct.phone ?? "" });
-  }, [editingProduct]);
+    const s = store.data;
+    if (!s) return;
+    setName(s.name); setDescription(s.description ?? ""); setPhone(s.phone ?? ""); setWhatsapp(s.whatsapp ?? "");
+    setStoreType(s.storeType); setLocationId(s.locationId); setLogoUrl(s.logoUrl); setCoverUrl(s.coverUrl);
+  }, [store.data]);
 
-  const setField = (field: keyof typeof emptyForm, value: string) => setForm((current) => ({ ...current, [field]: value }));
-  const save = () => {
-    if (form.title.trim().length < 3 || form.description.trim().length < 10 || !form.category.trim()) { Alert.alert("بيانات ناقصة", "أدخل العنوان والوصف والتصنيف قبل الحفظ."); return; }
-    if (editingId) updateProduct.mutate({ publicId: editingId, ...form });
-    else createProduct.mutate({ publicId: `store-${Date.now().toString(36)}`, ...form });
+  const pick = async (kind: "logo" | "cover") => {
+    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images"], allowsEditing: true, aspect: kind === "logo" ? [1, 1] : [16, 7], quality: 0.85 });
+    if (result.canceled || !result.assets[0]) return;
+    setUploading(kind);
+    try {
+      const url = await uploadImage(await prepareImageDataUrl(result.assets[0].uri), "store");
+      if (kind === "logo") setLogoUrl(url); else setCoverUrl(url);
+    } catch (e) {
+      notify(t("تعذر رفع الصورة"), friendlyError(e));
+    } finally {
+      setUploading(null);
+    }
   };
 
-  return <ScreenContainer className="px-4"><ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled"><View style={styles.header}><Pressable onPress={() => router.back()}><Text style={[styles.back, { color: colors.primary }]}>رجوع</Text></Pressable><Text style={[styles.title, { color: colors.foreground }]}>إدارة متجر مسقط</Text></View><Text style={[styles.subtitle, { color: colors.muted }]}>إضافة منتجات المتجر لا تمنح اعتمادًا مباشرًا؛ كل منتج يمر بالمراجعة.</Text><View style={[styles.form, { backgroundColor: colors.surface, borderColor: colors.border }]}>{([ ["title", "اسم المنتج"], ["description", "وصف المنتج"], ["category", "التصنيف"], ["price", "السعر"], ["location", "الموقع"], ["phone", "رقم التواصل"] ] as const).map(([field, label]) => <TextInput key={field} value={form[field]} onChangeText={(value) => setField(field, value)} placeholder={label} placeholderTextColor={colors.muted} multiline={field === "description"} style={[styles.input, { borderColor: colors.border, color: colors.foreground, minHeight: field === "description" ? 86 : 46 }]} textAlign="right" />)}<Pressable onPress={save} disabled={createProduct.isPending || updateProduct.isPending} style={[styles.save, { backgroundColor: colors.primary }]}><Text style={styles.saveText}>{editingId ? "حفظ التعديلات" : "إضافة المنتج"}</Text></Pressable>{editingId && <Pressable onPress={() => { setEditingId(undefined); setForm(emptyForm); }}><Text style={[styles.cancel, { color: colors.muted }]}>إلغاء التعديل</Text></Pressable>}</View><Text style={[styles.sectionTitle, { color: colors.foreground }]}>منتجات المتجر</Text>{products.isError && <Text style={[styles.status, { color: colors.error }]}>لا يمكن إدارة المنتجات دون اشتراك تاجر نشط.</Text>}{(products.data ?? []).map((product) => <View key={product.publicId} style={[styles.product, { backgroundColor: colors.surface, borderColor: colors.border }]}><View style={styles.productCopy}><Text style={[styles.productTitle, { color: colors.foreground }]}>{product.title}</Text><Text style={[styles.productMeta, { color: colors.muted }]}>{product.price || "السعر عند التواصل"} · {product.status}</Text></View><View style={styles.actions}><Pressable onPress={() => { setEditingId(product.publicId); setForm({ title: product.title ?? "", description: product.description ?? "", category: product.category ?? "", price: product.price ?? "", location: product.location ?? "مسقط", phone: product.phone ?? "" }); }}><Text style={[styles.action, { color: colors.primary }]}>تعديل</Text></Pressable><Pressable onPress={() => Alert.alert("حذف المنتج", "سيتم إخفاء المنتج من المتجر.", [{ text: "إلغاء", style: "cancel" }, { text: "حذف", style: "destructive", onPress: () => deleteProduct.mutate({ publicId: product.publicId }) }])}><Text style={[styles.action, { color: colors.error }]}>حذف</Text></Pressable></View></View>)}</ScrollView></ScreenContainer>;
+  const save = async () => {
+    setSaving(true);
+    try {
+      const saved = await saveMyStore({ name, description, phone, whatsapp, storeType, locationId, logoUrl, coverUrl });
+      await client.invalidateQueries({ queryKey: keys.myStore });
+      notify(t("تم حفظ المتجر"), saved.status === "pending" ? t("سيظهر متجرك للمشترين بعد موافقة المشرف.") : undefined);
+    } catch (e) {
+      notify(t("تعذر حفظ المتجر"), friendlyError(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const locationOptions = useMemo(() => locations.governorates.flatMap((g) => [{ value: String(g.id), label: pickName(g) }, ...locations.wilayatsOf(g.id).map((w) => ({ value: String(w.id), label: `   ${pickName(w)}`, detail: pickName(g) }))]), [locations]);
+  const live = (products.data ?? []).filter((l) => l.status === "active").length;
+  const paused = (products.data ?? []).filter((l) => l.status === "paused" || l.status === "sold").length;
+  const storeInquiries = (inquiries.data ?? []).filter((c) => c.iAmSeller);
+  const unreadInquiries = storeInquiries.reduce((n, c) => n + c.unread, 0);
+
+  if (loading || store.isLoading) return <ScreenContainer><Loading /></ScreenContainer>;
+  if (!isAuthenticated) return <ScreenContainer className="px-4"><Header title={t("متجري")} /><LoginRequired /></ScreenContainer>;
+
+  const s = store.data;
+  const statusText = !s ? t("لم تنشئ متجرًا بعد") : s.status === "active" ? t("مفعّل ويظهر للمشترين") : s.status === "pending" ? t("بانتظار موافقة المشرف") : t("موقوف من الإدارة");
+
+  return (
+    <ScreenContainer className="px-4">
+      <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={styles.content}>
+        <Header title={s ? t("إدارة المتجر") : t("أنشئ متجرك")} subtitle={statusText} right={s?.status === "active" ? <Button small variant="outline" icon="open-in-new" label={t("عرض")} onPress={() => router.push({ pathname: "/store/[merchantId]", params: { merchantId: s.ownerId } })} /> : undefined} />
+
+        {s ? (
+          <View style={styles.stats}>
+            <Stat label={t("منتجات منشورة")} value={live} onPress={() => router.push("/(tabs)/myads")} />
+            <Stat label={t("موقوفة أو مباعة")} value={paused} onPress={() => router.push("/(tabs)/myads")} />
+            <Stat label={t("استفسارات العملاء")} value={storeInquiries.length} badge={unreadInquiries} onPress={() => router.push("/(tabs)/messages")} />
+          </View>
+        ) : null}
+
+        <Text style={[styles.section, { color: colors.foreground }]}>{t("صور المتجر")}</Text>
+        <Pressable onPress={() => pick("cover")} style={[styles.cover, { backgroundColor: colors.surfaceAlt, borderColor: colors.border }]}>
+          {coverUrl ? <Image source={{ uri: coverUrl }} style={StyleSheet.absoluteFill} /> : <><MaterialIcons name="panorama" size={30} color={colors.muted} /><Text style={{ color: colors.muted }}>{uploading === "cover" ? t("جارٍ الرفع...") : t("صورة الغلاف")}</Text></>}
+        </Pressable>
+        <Pressable onPress={() => pick("logo")} style={[styles.logo, { backgroundColor: colors.accentSoft, borderColor: colors.surface }]}>
+          {logoUrl ? <Image source={{ uri: logoUrl }} style={styles.logoImg} /> : <MaterialIcons name={uploading === "logo" ? "hourglass-empty" : "add-a-photo"} size={26} color={colors.primary} />}
+        </Pressable>
+
+        <Field label={t("اسم المتجر")} required><Input value={name} onChangeText={setName} placeholder={t("مثال: محل النور للإلكترونيات")} /></Field>
+        <Field label={t("نوع المتجر")}>
+          <View style={styles.chips}>{(Object.keys(STORE_TYPES) as StoreType[]).map((k) => <Chip key={k} label={t(STORE_TYPES[k])} active={storeType === k} onPress={() => setStoreType(k)} />)}</View>
+        </Field>
+        <Field label={t("وصف المتجر")}><Input value={description} onChangeText={setDescription} multiline multilineHeight={100} placeholder={t("ماذا تبيع؟ أوقات العمل؟ التوصيل؟")} /></Field>
+        <Field label={t("الموقع")}><SelectField value={locations.label(locationId)} placeholder={t("اختر المحافظة أو الولاية")} onPress={() => setLocationSheet(true)} /></Field>
+        <Field label={t("هاتف المتجر")}><Input value={phone} onChangeText={setPhone} keyboardType="phone-pad" placeholder="+968 9XXXXXXX" /></Field>
+        <Field label={t("واتساب")}><Input value={whatsapp} onChangeText={setWhatsapp} keyboardType="phone-pad" placeholder="+968 9XXXXXXX" /></Field>
+        <Button label={s ? t("حفظ التغييرات") : t("إنشاء المتجر")} loading={saving} disabled={Boolean(uploading)} onPress={save} style={{ marginTop: 20 }} />
+
+        <Card style={{ marginTop: 20 }}>
+          <Text style={[styles.cardTitle, { color: colors.foreground }]}>{t("المنتجات")}</Text>
+          <Text style={[styles.note, { color: colors.muted }]}>{t("منتجات متجرك هي إعلاناتك. أضف منتجًا جديدًا أو أوقف المنتجات غير المتوفرة من إعلاناتي.")}</Text>
+          <View style={styles.row}>
+            <Button small icon="add" label={t("إضافة منتج")} onPress={() => router.push("/select-category")} style={{ flex: 1 }} />
+            <Button small variant="outline" icon="inventory" label={t("إدارة المنتجات")} onPress={() => router.push("/(tabs)/myads")} style={{ flex: 1 }} />
+          </View>
+        </Card>
+      </ScrollView>
+      <SelectSheet visible={locationSheet} title={t("الموقع")} selected={locationId ? String(locationId) : null} options={locationOptions} onClose={() => setLocationSheet(false)} onSelect={(v) => { setLocationId(Number(v)); setLocationSheet(false); }} />
+    </ScreenContainer>
+  );
 }
 
-const styles = StyleSheet.create({ content: { paddingBottom: 36 }, header: { alignItems: "center", flexDirection: "row-reverse", justifyContent: "space-between", paddingTop: 12 }, title: { fontSize: 25, fontWeight: "900", textAlign: "right" }, back: { fontSize: 14, fontWeight: "800" }, subtitle: { fontSize: 13, lineHeight: 21, marginTop: 12, textAlign: "right" }, form: { borderRadius: 18, borderWidth: 1, marginTop: 18, padding: 12 }, input: { borderRadius: 11, borderWidth: 1, fontSize: 14, marginBottom: 9, paddingHorizontal: 12, paddingVertical: 10 }, save: { alignItems: "center", borderRadius: 12, marginTop: 4, paddingVertical: 13 }, saveText: { color: "#FFFFFF", fontSize: 14, fontWeight: "900" }, cancel: { fontSize: 13, marginTop: 12, textAlign: "center" }, sectionTitle: { fontSize: 19, fontWeight: "900", marginTop: 25, textAlign: "right" }, status: { fontSize: 13, marginTop: 15, textAlign: "right" }, product: { alignItems: "center", borderRadius: 15, borderWidth: 1, flexDirection: "row-reverse", marginTop: 10, padding: 12 }, productCopy: { flex: 1 }, productTitle: { fontSize: 15, fontWeight: "800", textAlign: "right" }, productMeta: { fontSize: 12, marginTop: 5, textAlign: "right" }, actions: { flexDirection: "row-reverse", gap: 12, marginRight: 12 }, action: { fontSize: 12, fontWeight: "800" } });
+function Stat({ label, value, badge, onPress }: { label: string; value: number; badge?: number; onPress: () => void }) {
+  const colors = useColors();
+  return (
+    <Pressable onPress={onPress} style={[styles.stat, { backgroundColor: colors.surface, borderColor: badge ? colors.accent : colors.border }]}>
+      <Text style={[styles.statValue, { color: colors.primary }]}>{formatNumber(value)}</Text>
+      <Text style={[styles.statLabel, { color: colors.muted }]}>{label}</Text>
+      {badge ? <Text style={[styles.statBadge, { color: colors.accent }]}>{t("{n} غير مقروءة", { n: badge })}</Text> : null}
+    </Pressable>
+  );
+}
+
+const styles = createStyles({
+  content: { paddingBottom: 40 },
+  stats: { flexDirection: "row-reverse", gap: 8, marginTop: 6 },
+  stat: { alignItems: "center", borderRadius: 14, borderWidth: 1, flex: 1, paddingVertical: 12 },
+  statValue: { fontSize: 22, fontVariant: ["tabular-nums"], fontWeight: "900" },
+  statLabel: { fontSize: 11, marginTop: 2, textAlign: "center" },
+  statBadge: { fontSize: 10, fontWeight: "900", marginTop: 2 },
+  section: { fontSize: 16, fontWeight: "900", marginBottom: 10, marginTop: 22, textAlign: "right" },
+  cover: { alignItems: "center", borderRadius: 16, borderWidth: 1, gap: 4, height: 130, justifyContent: "center", overflow: "hidden" },
+  logo: { alignItems: "center", alignSelf: "flex-end", borderRadius: 40, borderWidth: 4, height: 80, justifyContent: "center", marginRight: 18, marginTop: -40, overflow: "hidden", width: 80 },
+  logoImg: { height: "100%", width: "100%" },
+  chips: { flexDirection: "row-reverse", flexWrap: "wrap", gap: 8 },
+  cardTitle: { fontSize: 15, fontWeight: "900", textAlign: "right" },
+  note: { fontSize: 12, lineHeight: 19, marginTop: 6, textAlign: "right" },
+  row: { flexDirection: "row-reverse", gap: 8, marginTop: 12 },
+});

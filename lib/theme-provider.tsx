@@ -40,17 +40,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
 
   const themeVariables = useMemo(
     () =>
-      vars({
-        "color-primary": SchemeColors[colorScheme].primary,
-        "color-background": SchemeColors[colorScheme].background,
-        "color-surface": SchemeColors[colorScheme].surface,
-        "color-foreground": SchemeColors[colorScheme].foreground,
-        "color-muted": SchemeColors[colorScheme].muted,
-        "color-border": SchemeColors[colorScheme].border,
-        "color-success": SchemeColors[colorScheme].success,
-        "color-warning": SchemeColors[colorScheme].warning,
-        "color-error": SchemeColors[colorScheme].error,
-      }),
+      vars(Object.fromEntries(Object.entries(SchemeColors[colorScheme]).map(([token, value]) => [`color-${token}`, value]))),
     [colorScheme],
   );
 
@@ -61,7 +51,6 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     }),
     [colorScheme, setColorScheme],
   );
-  console.log(value, themeVariables)
 
   return (
     <ThemeContext.Provider value={value}>
