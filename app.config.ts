@@ -4,7 +4,7 @@ import type { ExpoConfig } from "expo/config";
 
 // Bundle ID can only contain letters, numbers, and dots
 // Android requires each dot-separated segment to start with a letter
-const rawBundleId = "com.app.souqmobile";
+const rawBundleId = "com.daralsila.app";
 const bundleId =
   rawBundleId
     .replace(/[-_]/g, ".") // Replace hyphens/underscores with dots
@@ -18,14 +18,14 @@ const bundleId =
       // Prefix with 'x' if segment starts with a digit
       return /^[a-zA-Z]/.test(segment) ? segment : "x" + segment;
     })
-    .join(".") || "com.app.souqmobile";
+    .join(".") || "com.daralsila.app";
 // Stable deep-link scheme owned by Dar Al-Sila (used for the Supabase OAuth redirect).
 const schemeFromBundleId = "daralsila";
 
 const env = {
   // App branding - update these values directly (do not use env vars)
   appName: "دار السلع",
-  appSlug: "souq-mobile",
+  appSlug: "dar-al-sila",
   scheme: schemeFromBundleId,
   iosBundleId: bundleId,
   androidPackage: bundleId,
@@ -48,9 +48,10 @@ const config: ExpoConfig = {
       }
   },
   android: {
-    versionCode: 3,
+    // CI sets ANDROID_VERSION_CODE to the build number so each APK installs over the last one.
+    versionCode: Number(process.env.ANDROID_VERSION_CODE ?? 3),
     adaptiveIcon: {
-      backgroundColor: "#0B4A3B",
+      backgroundColor: "#0B1F17",
       foregroundImage: "./assets/images/android-icon-foreground.png",
       backgroundImage: "./assets/images/android-icon-background.png",
       monochromeImage: "./assets/images/android-icon-monochrome.png",

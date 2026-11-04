@@ -1,0 +1,63 @@
+name: Build Android APK
+
+# Builds an installable APK (test build, signed with the Expo template's debug key)
+# and publishes it as the "android-latest" release, so it can be downloaded on a phone.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-apk
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+      - run: pnpm install --frozen-lockfile
+      - name: Generate native Android project
+        env:
+          CI: "1"
+          ANDROID_VERSION_CODE: ${{ github.run_number }}
+        run: npx expo prebuild --platform android --no-install --clean
+      - name: Build release APK
+        env:
+          ANDROID_VERSION_CODE: ${{ github.run_number }}
+        working-directory: android
+        run: |
+          echo "org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g" >> gradle.properties
+          ./gradlew assembleRelease --no-daemon
+      - name: Collect APK
+        run: |
+          mkdir -p out
+          cp android/app/build/outputs/apk/release/app-release.apk "out/dar-al-sila.apk"
+          ls -la out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dar-al-sila-apk
+          path: out/dar-al-sila.apk
+      - name: Publish to the android-latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete android-latest --yes --cleanup-tag || true
+          gh release create android-latest out/dar-al-sila.apk \
+            --title "دار السلع — أندرويد (نسخة تجريبية #${{ github.run_number }})" \
+            --notes "نسخة تجريبية للتثبيت المباشر. حمّل الملف dar-al-sila.apk على جوال أندرويد واسمح بالتثبيت من مصادر غير معروفة. البناء: ${{ github.sha }}" \
+            --prerelease
