@@ -41,7 +41,7 @@ jobs:
           ANDROID_VERSION_CODE: ${{ github.run_number }}
         working-directory: android
         run: |
-          echo "org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g" >> gradle.properties
+          printf "\norg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g\n" >> gradle.properties
           ./gradlew assembleRelease --no-daemon
       - name: Collect APK
         run: |
