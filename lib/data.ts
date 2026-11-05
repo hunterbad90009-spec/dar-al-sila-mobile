@@ -583,7 +583,8 @@ export async function getCurrentUser(): Promise<AppUser | null> {
   const { data } = await supabase.auth.getSession();
   const authUser = data.session?.user;
   if (!authUser) return null;
-  const { data: profile } = await supabase.from("profiles").select("*").eq("id", authUser.id).maybeSingle();
+  // my_profile() returns the full own row (phone included); phone is not readable for other users.
+  const { data: profile } = await supabase.rpc("my_profile").maybeSingle();
   const p = (profile ?? {}) as Record<string, unknown>;
   const role = p.role === "admin" || p.role === "merchant" ? p.role : "user";
   return {
@@ -931,9 +932,8 @@ export async function moderateListing(input: { id: string; action: "approve" | "
 export type AdminUser = { id: string; name: string; username: string | null; phone: string | null; role: "user" | "merchant" | "admin"; merchantStatus: string; createdAt: string };
 
 export async function adminUsers(input: { q?: string }): Promise<AdminUser[]> {
-  let query = supabase.from("profiles").select("id, full_name, username, phone, role, merchant_status, created_at").order("created_at", { ascending: false }).limit(300);
-  if (input.q?.trim()) query = query.or(`full_name.ilike.${likeTerm(input.q)},username.ilike.${likeTerm(input.q)}`);
-  const { data, error } = await query;
+  // admin_list_profiles() is checked with is_admin() on the server and includes phone numbers.
+  const { data, error } = await supabase.rpc("admin_list_profiles", { q: input.q?.trim() || null });
   return rowsOrEmpty(data as Record<string, any>[] | null, error).map((r) => ({ id: r.id, name: r.full_name || r.username || "—", username: r.username, phone: r.phone, role: r.role ?? "user", merchantStatus: r.merchant_status ?? "none", createdAt: r.created_at }));
 }
 
