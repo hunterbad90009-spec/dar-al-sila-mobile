@@ -610,4 +610,12 @@ export const en: Record<string, string> = {
   "يُفحص الإعلان تلقائيًا قبل ظهوره لحماية المشترين والبائعين": "Listings are checked automatically before appearing, to protect buyers and sellers",
   "يُمنع نشر الأسلحة والمواد الخطرة والمحتوى الإباحي والاحتيال والعروض المضللة. راجع سياسة المواد الممنوعة.": "Weapons, hazardous materials, adult content, fraud and misleading offers are prohibited. See the prohibited items policy.",
   "📷 صورة": "📷 Photo",
+  "قفل اللوحة": "Lock panel",
+  "محاولات كثيرة خاطئة. حاول بعد 15 دقيقة.": "Too many wrong attempts. Try again in 15 minutes.",
+  "لم تُضبط كلمة مرور اللوحة بعد.": "The panel password hasn't been set yet.",
+  "كلمة المرور غير صحيحة. المحاولات المتبقية: {n}": "Wrong password. Attempts left: {n}",
+  "اللوحة مقفلة": "Panel locked",
+  "أدخل كلمة مرور لوحة المشرف. تبقى مفتوحة 30 دقيقة ثم تُقفل تلقائيًا.": "Enter the admin panel password. It stays open for 30 minutes, then locks automatically.",
+  "كلمة مرور اللوحة": "Panel password",
+  "فتح اللوحة": "Unlock panel",
 };

@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { router } from "expo-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Image, Pressable, ScrollView, Switch, Text, View } from "react-native";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { ScreenContainer } from "@/components/screen-container";
@@ -45,9 +45,10 @@ export default function AdminScreen() {
     return <ScreenContainer className="px-4"><Header title={t("لوحة المشرف")} /><EmptyState icon="lock" title={t("غير مصرح")} text={t("هذه الصفحة لفريق إدارة دار السلع فقط.")} actionLabel={t("العودة للرئيسية")} onAction={() => router.replace("/(tabs)")} /></ScreenContainer>;
   }
 
-  return (
+  return <AdminLockGate>{(lock) => (
     <ScreenContainer className="px-4">
       <Header title={t("لوحة المشرف")} subtitle={t("كل إجراء هنا يُسجَّل في سجل الإجراءات")} />
+      <Button small variant="ghost" icon="lock" label={t("قفل اللوحة")} onPress={lock} style={{ alignSelf: "flex-start", marginBottom: 6 }} />
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabs} style={{ flexGrow: 0 }}>
         {SECTIONS.map((s) => <Chip key={s.key} icon={s.icon} label={t(s.label)} active={section === s.key} onPress={() => setSection(s.key)} />)}
       </ScrollView>
@@ -63,6 +64,69 @@ export default function AdminScreen() {
         {section === "settings" && <SettingsPanel />}
         <View style={{ height: 30 }} />
       </ScrollView>
+    </ScreenContainer>
+  )}</AdminLockGate>;
+}
+
+/**
+ * Password lock in front of the panel. The server enforces it too: while locked,
+ * is_admin() is false, so every admin read/write is refused even if this screen is bypassed.
+ */
+function AdminLockGate({ children }: { children: (lock: () => void) => React.ReactNode }) {
+  const colors = useColors();
+  const queryClient = useQueryClient();
+  const status = useQuery({ queryKey: ["admin", "unlock"], queryFn: data.adminUnlockStatus, refetchInterval: 60_000 });
+  const [password, setPassword] = useState("");
+  const [message, setMessage] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const until = status.data ? new Date(status.data).getTime() : 0;
+
+  // Re-lock on screen when the 30 minutes run out.
+  useEffect(() => {
+    if (!until) return;
+    const timer = setTimeout(() => queryClient.setQueryData(["admin", "unlock"], null), Math.max(0, until - Date.now()));
+    return () => clearTimeout(timer);
+  }, [until, queryClient]);
+
+  const unlock = async () => {
+    if (!password) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      const r = await data.adminUnlock(password);
+      setPassword("");
+      if (r.ok) {
+        queryClient.setQueryData(["admin", "unlock"], r.until);
+        queryClient.invalidateQueries({ queryKey: ["admin"], predicate: (q) => q.queryKey[1] !== "unlock" });
+      } else if (r.reason === "locked") setMessage(t("محاولات كثيرة خاطئة. حاول بعد 15 دقيقة."));
+      else if (r.reason === "not_configured") setMessage(t("لم تُضبط كلمة مرور اللوحة بعد."));
+      else if (r.reason === "not_admin") setMessage(t("هذه الصفحة لفريق إدارة دار السلع فقط."));
+      else setMessage(t("كلمة المرور غير صحيحة. المحاولات المتبقية: {n}", { n: r.remaining ?? 0 }));
+    } catch (e) {
+      setMessage(e instanceof Error ? e.message : t("حاول مرة أخرى."));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const lock = async () => {
+    await data.adminLock();
+    queryClient.setQueryData(["admin", "unlock"], null);
+    queryClient.removeQueries({ queryKey: ["admin"], predicate: (q) => q.queryKey[1] !== "unlock" });
+  };
+
+  if (status.isLoading) return <ScreenContainer><Loading /></ScreenContainer>;
+  if (until > Date.now()) return <>{children(lock)}</>;
+
+  return (
+    <ScreenContainer className="px-4">
+      <Header title={t("لوحة المشرف")} />
+      <View style={[styles.lockIcon, { backgroundColor: colors.primary }]}><MaterialIcons name="lock" size={34} color={colors.accent} /></View>
+      <Text style={[styles.lockTitle, { color: colors.foreground }]}>{t("اللوحة مقفلة")}</Text>
+      <Text style={[styles.lockText, { color: colors.muted }]}>{t("أدخل كلمة مرور لوحة المشرف. تبقى مفتوحة 30 دقيقة ثم تُقفل تلقائيًا.")}</Text>
+      <Field label={t("كلمة مرور اللوحة")}><Input value={password} onChangeText={setPassword} secureTextEntry autoCapitalize="none" autoCorrect={false} onSubmitEditing={unlock} /></Field>
+      {message ? <Text style={[styles.lockError, { color: colors.error }]}>{message}</Text> : null}
+      <Button icon="lock-open" label={t("فتح اللوحة")} loading={busy} disabled={!password || busy} onPress={unlock} style={{ marginTop: 14 }} />
     </ScreenContainer>
   );
 }
@@ -331,6 +395,10 @@ const STATUS_TEXT: Record<data.DbStatus, string> = {
 };
 
 const styles = createStyles({
+  lockIcon: { alignItems: "center", alignSelf: "center", borderRadius: 26, height: 76, justifyContent: "center", marginTop: 30, width: 76 },
+  lockTitle: { fontSize: 20, fontWeight: "900", marginTop: 14, textAlign: "center" },
+  lockText: { fontSize: 13, lineHeight: 21, marginBottom: 10, marginTop: 6, textAlign: "center" },
+  lockError: { fontSize: 13, fontWeight: "700", marginTop: 10, textAlign: "right" },
   tabs: { flexDirection: "row-reverse", gap: 8, paddingVertical: 10 },
   content: { paddingBottom: 30 },
   tiles: { flexDirection: "row-reverse", flexWrap: "wrap", gap: 10 },

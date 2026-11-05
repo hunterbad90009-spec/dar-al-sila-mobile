@@ -875,6 +875,27 @@ const toReport = (r: Record<string, any>): Report => ({
 });
 
 // ---------------------------------------------------------------------------
+// Admin panel lock (0007): admin rights also need a password unlock in the last 30 minutes.
+export type AdminUnlockResult = { ok: true; until: string } | { ok: false; reason: "wrong" | "locked" | "not_admin" | "not_configured"; remaining?: number; lockedUntil?: string };
+
+export async function adminUnlockStatus(): Promise<string | null> {
+  const { data, error } = await supabase.rpc("admin_unlock_status");
+  if (error) throw new Error(friendlyError(error));
+  return (data as string | null) ?? null;
+}
+
+export async function adminUnlock(password: string): Promise<AdminUnlockResult> {
+  const { data, error } = await supabase.rpc("admin_unlock", { p_password: password });
+  if (error) throw new Error(friendlyError(error));
+  const r = data as { ok: boolean; reason?: string; remaining?: number; locked_until?: string; unlocked_until?: string };
+  if (r.ok) return { ok: true, until: r.unlocked_until! };
+  return { ok: false, reason: (r.reason as "wrong") ?? "wrong", remaining: r.remaining, lockedUntil: r.locked_until };
+}
+
+export async function adminLock() {
+  await supabase.rpc("admin_lock");
+}
+
 // Administration (spec 4.15). Every call is re-checked by RLS (is_admin()) and
 // every change is written to admin_audit_logs by a database trigger.
 // ---------------------------------------------------------------------------
