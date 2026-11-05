@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { Image, Pressable, ScrollView, Switch, Text, View } from "react-native";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { ScreenContainer } from "@/components/screen-container";
-import { Button, Card, Chip, EmptyState, ErrorState, Field, Header, Input, Loading, StatusPill, notify } from "@/components/market/ui";
+import { Button, Card, Chip, EmptyState, ErrorState, Field, Header, Input, Loading, StatusPill, notify, useGrid } from "@/components/market/ui";
 import { useAuth } from "@/hooks/use-auth";
 import { useColors } from "@/hooks/use-colors";
 import * as data from "@/lib/data";
@@ -133,6 +133,7 @@ function AdminLockGate({ children }: { children: (lock: () => void) => React.Rea
 
 function Overview({ go }: { go: (s: Section) => void }) {
     const colors = useColors();
+    const tileGrid = useGrid({ gap: 10, columns: 2 });
     const q = useQuery({ queryKey: ["admin", "overview"], queryFn: data.adminOverview });
     if (q.isLoading) return <Loading />;
     if (q.isError) return <ErrorState message={data.friendlyError(q.error)} onRetry={() => q.refetch()} />;
@@ -149,9 +150,9 @@ function Overview({ go }: { go: (s: Section) => void }) {
       { label: "المحادثات", value: o.conversations, section: "overview" },
     ];
     return (
-      <View style={styles.tiles}>
+      <View onLayout={tileGrid.onLayout} style={styles.tiles}>
         {tiles.map((tile) => (
-          <Pressable key={tile.label} onPress={() => go(tile.section)} style={[styles.tile, { backgroundColor: colors.surface, borderColor: tile.alert ? colors.accent : colors.border }]}>
+          <Pressable key={tile.label} onPress={() => go(tile.section)} style={[styles.tile, { width: tileGrid.itemWidth, backgroundColor: colors.surface, borderColor: tile.alert ? colors.accent : colors.border }]}>
             <Text style={[styles.tileValue, { color: tile.alert ? colors.warning : colors.primary }]}>{formatNumber(tile.value)}</Text>
             <Text style={[styles.tileLabel, { color: colors.muted }]}>{t(tile.label)}</Text>
           </Pressable>
@@ -402,7 +403,7 @@ const styles = createStyles({
   tabs: { flexDirection: "row-reverse", gap: 8, paddingVertical: 10 },
   content: { paddingBottom: 30 },
   tiles: { flexDirection: "row-reverse", flexWrap: "wrap", gap: 10 },
-  tile: { borderRadius: 16, borderWidth: 1, minHeight: 92, padding: 14, width: "48%" },
+  tile: { borderRadius: 16, borderWidth: 1, minHeight: 92, padding: 14 },
   tileValue: { fontSize: 26, fontVariant: ["tabular-nums"], fontWeight: "900", textAlign: "right" },
   tileLabel: { fontSize: 12, marginTop: 4, textAlign: "right" },
   item: { marginTop: 10 },

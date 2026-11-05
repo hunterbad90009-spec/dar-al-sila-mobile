@@ -4,10 +4,23 @@
  * and mirrored automatically for English (lib/i18n/rtl.ts).
  */
 import { router } from "expo-router";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useCallback, useState } from "react";
 import {
-  ActivityIndicator, Alert, Image, Modal, Platform, Pressable, ScrollView, Text, TextInput, View,
-  type TextInputProps, type StyleProp, type ViewStyle,
+  ActivityIndicator,
+  Alert,
+  Image,
+  Modal,
+  Platform,
+  Pressable,
+  ScrollView,
+  Text,
+  TextInput,
+  View,
+  type TextInputProps,
+  type StyleProp,
+  type ViewStyle,
+  useWindowDimensions,
+  type LayoutChangeEvent,
 } from "react-native";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { useColors } from "@/hooks/use-colors";
@@ -272,8 +285,28 @@ export function ListingCard({ listing, width = "48.4%" }: { listing: Listing; wi
   );
 }
 
+/**
+ * Exact item widths for wrapping grids. Percent widths plus `gap` can add up to a hair
+ * over 100% on Android, which pushes the last item to a new row and leaves an empty gap.
+ * Here the grid measures its real width and gives every item a whole-pixel width instead.
+ * Pass `columns` for a fixed count, or `minItemWidth` to fit as many columns as the screen allows.
+ */
+export function useGrid({ gap, columns, minItemWidth = 150, maxColumns = 4, sidePadding = 32 }: { gap: number; columns?: number; minItemWidth?: number; maxColumns?: number; sidePadding?: number }) {
+  const window = useWindowDimensions();
+  const [measured, setMeasured] = useState(0);
+  const onLayout = useCallback((e: LayoutChangeEvent) => {
+    const next = e.nativeEvent.layout.width;
+    setMeasured((prev) => (Math.abs(prev - next) > 0.5 ? next : prev));
+  }, []);
+  const width = measured || Math.max(0, window.width - sidePadding); // estimate until measured
+  const cols = columns ?? Math.max(1, Math.min(maxColumns, Math.floor((width + gap) / (minItemWidth + gap))));
+  const itemWidth = Math.max(0, Math.floor((width - gap * (cols - 1)) / cols));
+  return { onLayout, itemWidth, columns: cols };
+}
+
 export function ListingGrid({ items }: { items: Listing[] }) {
-  return <View style={styles.grid}>{items.map((item) => <ListingCard key={item.id} listing={item} />)}</View>;
+  const grid = useGrid({ gap: 11, minItemWidth: 155 });
+  return <View onLayout={grid.onLayout} style={styles.grid}>{items.map((item) => <ListingCard key={item.id} listing={item} width={grid.itemWidth} />)}</View>;
 }
 
 /** Horizontal strip of listing cards (featured, related, recommended). */
@@ -337,6 +370,6 @@ const styles = createStyles({
   listingMeta: { alignItems: "center", flexDirection: "row-reverse", gap: 2 },
   listingMetaText: { flex: 1, fontSize: 11, textAlign: "right" },
   listingTime: { fontSize: 10, textAlign: "right" },
-  grid: { flexDirection: "row-reverse", flexWrap: "wrap", gap: 11, justifyContent: "space-between" },
+  grid: { flexDirection: "row-reverse", flexWrap: "wrap", gap: 11 },
   strip: { flexDirection: "row-reverse", gap: 11, paddingVertical: 2 },
 });

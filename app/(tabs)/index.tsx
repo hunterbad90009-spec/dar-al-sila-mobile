@@ -4,7 +4,7 @@ import { Image, Pressable, ScrollView, Text, View } from "react-native";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { ScreenContainer } from "@/components/screen-container";
 import { GoldSheen } from "@/components/gold-sheen";
-import { EmptyState, ErrorState, ListingGrid, ListingStrip, Loading, SectionHeader } from "@/components/market/ui";
+import { EmptyState, ErrorState, ListingGrid, ListingStrip, Loading, SectionHeader, useGrid } from "@/components/market/ui";
 import { useColors } from "@/hooks/use-colors";
 import { useColorScheme } from "@/hooks/use-color-scheme";
 import { useNotificationPrefs } from "@/lib/notification-prefs";
@@ -17,6 +17,7 @@ import { createStyles } from "@/lib/i18n/rtl";
 
 export default function HomeScreen() {
   const colors = useColors();
+  const categoryGrid = useGrid({ gap: 9, columns: 3 });
   const scheme = useColorScheme();
   const categories = useCategories();
   const locations = useLocations();
@@ -80,11 +81,11 @@ export default function HomeScreen() {
 
         <SectionHeader title={t("التصنيفات")} action={t("كل التصنيفات")} onAction={() => router.push("/(tabs)/categories")} />
         {categories.isLoading ? <Loading /> : categories.isError ? <ErrorState onRetry={() => categories.refetch()} /> : (
-          <View style={styles.categoriesGrid}>
+          <View onLayout={categoryGrid.onLayout} style={styles.categoriesGrid}>
             {categories.top.slice(0, 12).map((cat) => {
               const style = categoryStyle(cat.slug);
               return (
-                <Pressable key={cat.id} onPress={() => router.push({ pathname: "/category/[slug]", params: { slug: cat.slug } })} style={({ pressed }) => [styles.categoryCard, { backgroundColor: scheme === "dark" ? colors.surfaceAlt : style.tint, opacity: pressed ? 0.8 : 1 }]}>
+                <Pressable key={cat.id} onPress={() => router.push({ pathname: "/category/[slug]", params: { slug: cat.slug } })} style={({ pressed }) => [styles.categoryCard, { width: categoryGrid.itemWidth, backgroundColor: scheme === "dark" ? colors.surfaceAlt : style.tint, opacity: pressed ? 0.8 : 1 }]}>
                   <MaterialIcons name={style.icon} size={27} color={colors.primary} />
                   <Text style={[styles.categoryText, { color: colors.foreground }]} numberOfLines={2}>{pickName(cat)}</Text>
                 </Pressable>
@@ -166,7 +167,7 @@ const styles = createStyles({
   announcement: { alignItems: "center", borderRadius: 14, borderWidth: 1, flexDirection: "row-reverse", gap: 8, marginTop: 14, padding: 12 },
   announcementText: { flex: 1, fontSize: 13, fontWeight: "700", lineHeight: 20, textAlign: "right" },
   categoriesGrid: { flexDirection: "row-reverse", flexWrap: "wrap", gap: 9 },
-  categoryCard: { alignItems: "center", borderRadius: 17, gap: 5, justifyContent: "center", minHeight: 92, paddingHorizontal: 6, width: "31.8%" },
+  categoryCard: { alignItems: "center", borderRadius: 17, gap: 5, justifyContent: "center", minHeight: 92, paddingHorizontal: 6 },
   categoryText: { fontSize: 11, fontWeight: "800", textAlign: "center" },
   banner: { alignItems: "center", borderRadius: 22, flexDirection: "row-reverse", gap: 12, justifyContent: "space-between", marginTop: 22, minHeight: 140, overflow: "hidden", paddingHorizontal: 18, paddingVertical: 16 },
   bannerCopy: { flex: 1 },
