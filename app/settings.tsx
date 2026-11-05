@@ -11,6 +11,7 @@ import { t, useLanguage } from "@/lib/i18n";
 import { prepareImageDataUrl } from "@/lib/prepare-image-data-url";
 import { saveNotificationPrefs, useNotificationPrefs } from "@/lib/notification-prefs";
 import { createStyles } from "@/lib/i18n/rtl";
+import { AppearancePicker } from "@/components/appearance-picker";
 
 
 /** Profile, language, notification preferences and password (spec 4.12). */
@@ -94,6 +95,9 @@ export default function SettingsScreen() {
           <Button small variant={lang === "ar" ? "primary" : "ghost"} label="العربية" onPress={() => void setLang("ar")} style={{ flex: 1 }} />
           <Button small variant={lang === "en" ? "primary" : "ghost"} label="English" onPress={() => void setLang("en")} style={{ flex: 1 }} />
         </View>
+
+        <Text style={[styles.section, { color: colors.foreground }]}>{t("المظهر")}</Text>
+        <AppearancePicker />
 
         <Text style={[styles.section, { color: colors.foreground }]}>{t("تفضيلات الإشعارات")}</Text>
         <Card>

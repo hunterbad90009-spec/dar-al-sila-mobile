@@ -3,24 +3,37 @@ import { Platform } from "react-native";
 import themeConfig from "@/theme.config";
 
 export type ColorScheme = "light" | "dark";
+/** Palette shown on screen: "white" is the light scheme with pure-white surfaces. */
+export type PaletteName = ColorScheme | "white";
 
 export const ThemeColors = themeConfig.themeColors;
 
 type ThemeColorTokens = typeof ThemeColors;
 type ThemeColorName = keyof ThemeColorTokens;
-type SchemePalette = Record<ColorScheme, Record<ThemeColorName, string>>;
+type SchemePalette = Record<PaletteName, Record<ThemeColorName, string>>;
 type SchemePaletteItem = SchemePalette[ColorScheme];
+
+/** "White" appearance: same brand green and gold, pure-white background and cards. */
+const WHITE_OVERRIDES = {
+  background: "#FFFFFF",
+  surface: "#FFFFFF",
+  surfaceAlt: "#F4F5F3",
+  border: "#E7E9E6",
+  accentSoft: "#FBF5E1",
+};
 
 function buildSchemePalette(colors: ThemeColorTokens): SchemePalette {
   const palette: SchemePalette = {
     light: {} as SchemePalette["light"],
     dark: {} as SchemePalette["dark"],
+    white: {} as SchemePalette["white"],
   };
 
   (Object.keys(colors) as ThemeColorName[]).forEach((name) => {
     const swatch = colors[name];
     palette.light[name] = swatch.light;
     palette.dark[name] = swatch.dark;
+    palette.white[name] = (WHITE_OVERRIDES as Partial<Record<ThemeColorName, string>>)[name] ?? swatch.light;
   });
 
   return palette;
@@ -38,7 +51,7 @@ type RuntimePalette = SchemePaletteItem & {
   border: string;
 };
 
-function buildRuntimePalette(scheme: ColorScheme): RuntimePalette {
+function buildRuntimePalette(scheme: PaletteName): RuntimePalette {
   const base = SchemeColors[scheme];
   return {
     ...base,
@@ -55,9 +68,10 @@ function buildRuntimePalette(scheme: ColorScheme): RuntimePalette {
 export const Colors = {
   light: buildRuntimePalette("light"),
   dark: buildRuntimePalette("dark"),
-} satisfies Record<ColorScheme, RuntimePalette>;
+  white: buildRuntimePalette("white"),
+} satisfies Record<PaletteName, RuntimePalette>;
 
-export type ThemeColorPalette = (typeof Colors)[ColorScheme];
+export type ThemeColorPalette = (typeof Colors)[PaletteName];
 
 export const Fonts = Platform.select({
   ios: {

@@ -618,4 +618,9 @@ export const en: Record<string, string> = {
   "أدخل كلمة مرور لوحة المشرف. تبقى مفتوحة 30 دقيقة ثم تُقفل تلقائيًا.": "Enter the admin panel password. It stays open for 30 minutes, then locks automatically.",
   "كلمة مرور اللوحة": "Panel password",
   "فتح اللوحة": "Unlock panel",
+  "المظهر": "Appearance",
+  "الأصلي": "Original",
+  "الأبيض": "White",
+  "الداكن": "Dark",
+  "حسب الجوال": "Match phone",
 };

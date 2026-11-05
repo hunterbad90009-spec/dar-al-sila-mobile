@@ -10,6 +10,7 @@ import { deleteAccount, friendlyError } from "@/lib/data";
 import { isRTL, t, useLanguage } from "@/lib/i18n";
 import { useUnreadCounts } from "@/lib/queries";
 import { createStyles } from "@/lib/i18n/rtl";
+import { AppearancePicker } from "@/components/appearance-picker";
 
 type IconName = keyof typeof MaterialIcons.glyphMap;
 type Item = { label: string; detail: string; icon: IconName; route: string; badge?: number; auth?: boolean };
@@ -93,6 +94,9 @@ export default function ProfileScreen() {
             </Pressable>
           ))}
         </View>
+
+        <Text style={[styles.sectionTitle, { color: colors.foreground }]}>{t("المظهر")}</Text>
+        <AppearancePicker />
 
         {isAuthenticated ? <><Text style={[styles.sectionTitle, { color: colors.foreground }]}>{t("إدارة الحساب")}</Text>{renderItems(account)}</> : null}
         <Text style={[styles.sectionTitle, { color: colors.foreground }]}>{t("المساعدة والقوانين")}</Text>
