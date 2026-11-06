@@ -4,6 +4,7 @@ import { Image, Pressable, ScrollView, Text, View } from "react-native";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { ScreenContainer } from "@/components/screen-container";
 import { GoldSheen } from "@/components/gold-sheen";
+import { VideoAdBanner } from "@/components/video-ad-banner";
 import { EmptyState, ErrorState, ListingGrid, ListingStrip, Loading, SectionHeader, useGrid } from "@/components/market/ui";
 import { useColors } from "@/hooks/use-colors";
 import { useColorScheme } from "@/hooks/use-color-scheme";
@@ -91,17 +92,19 @@ export default function HomeScreen() {
           </View>
         )}
 
-        <View style={[styles.banner, { backgroundColor: colors.primary }]}>
-          <GoldSheen width={500} height={152} />
-          <View style={styles.bannerCopy}>
-            <Text style={[styles.bannerKicker, { color: colors.accent }]}>{t("دار السلع")}</Text>
-            <Text style={styles.bannerTitle}>{t("بِع واشترِ بسهولة في كل عُمان")}</Text>
-            <Text style={styles.bannerHint}>{t("أعلن مجانًا وتواصل مباشرة مع المشترين")}</Text>
-          </View>
-          <Pressable onPress={() => router.push("/select-category")} style={[styles.bannerButton, { backgroundColor: colors.accent }]}>
-            <Text style={styles.bannerButtonText}>{t("أضف إعلانك")}</Text>
-          </Pressable>
-        </View>
+        <VideoAdBanner fallback={(
+            <View style={[styles.banner, { backgroundColor: colors.primary }]}>
+              <GoldSheen width={500} height={152} />
+              <View style={styles.bannerCopy}>
+                <Text style={[styles.bannerKicker, { color: colors.accent }]}>{t("دار السلع")}</Text>
+                <Text style={styles.bannerTitle}>{t("بِع واشترِ بسهولة في كل عُمان")}</Text>
+                <Text style={styles.bannerHint}>{t("أعلن مجانًا وتواصل مباشرة مع المشترين")}</Text>
+              </View>
+              <Pressable onPress={() => router.push("/select-category")} style={[styles.bannerButton, { backgroundColor: colors.accent }]}>
+                <Text style={styles.bannerButtonText}>{t("أضف إعلانك")}</Text>
+              </Pressable>
+            </View>
+        )} />
 
         {(featured.data?.items.length ?? 0) > 0 ? (
           <>

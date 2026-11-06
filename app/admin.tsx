@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { Image, Pressable, ScrollView, Switch, Text, View } from "react-native";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { ScreenContainer } from "@/components/screen-container";
+import { VideoAdsPanel } from "@/components/admin/video-ads-panel";
 import { Button, Card, Chip, EmptyState, ErrorState, Field, Header, Input, Loading, StatusPill, notify, useGrid } from "@/components/market/ui";
 import { useAuth } from "@/hooks/use-auth";
 import { useColors } from "@/hooks/use-colors";
@@ -12,7 +13,7 @@ import { formatDate, formatNumber, pickName, t, timeAgo } from "@/lib/i18n";
 import { STORE_TYPES } from "@/lib/store-types";
 import { createStyles } from "@/lib/i18n/rtl";
 
-type Section = "overview" | "queue" | "listings" | "users" | "stores" | "categories" | "reports" | "appeals" | "reviews" | "audit" | "settings";
+type Section = "overview" | "queue" | "listings" | "users" | "stores" | "categories" | "reports" | "appeals" | "reviews" | "videoAds" | "audit" | "settings";
 const SECTIONS: { key: Section; label: string; icon: keyof typeof MaterialIcons.glyphMap }[] = [
   { key: "overview", label: "نظرة عامة", icon: "dashboard" },
   { key: "queue", label: "قائمة المراجعة", icon: "fact-check" },
@@ -23,6 +24,7 @@ const SECTIONS: { key: Section; label: string; icon: keyof typeof MaterialIcons.
   { key: "reports", label: "البلاغات", icon: "flag" },
   { key: "appeals", label: "الاعتراضات", icon: "gavel" },
   { key: "reviews", label: "تعليقات التقييم", icon: "rate-review" },
+  { key: "videoAds", label: "إعلانات الفيديو", icon: "smart-display" },
   { key: "audit", label: "سجل الإجراءات", icon: "history" },
   { key: "settings", label: "إعدادات المنصة", icon: "settings" },
 ];
@@ -64,6 +66,7 @@ export default function AdminScreen() {
         {section === "reports" && <ReportsPanel />}
         {section === "appeals" && <AppealsPanel />}
         {section === "reviews" && <ReviewsPanel />}
+        {section === "videoAds" && <VideoAdsPanel />}
         {section === "audit" && <AuditPanel />}
         {section === "settings" && <SettingsPanel />}
         <View style={{ height: 30 }} />
@@ -471,7 +474,7 @@ function AuditPanel() {
     if (list.isLoading) return <Loading />;
     if (list.isError) return <ErrorState message={data.friendlyError(list.error)} />;
     if (!list.data!.length) return <EmptyState icon="history" title={t("لا توجد إجراءات مسجلة بعد")} />;
-    const TABLES: Record<string, string> = { listings: "إعلان", stores: "متجر", profiles: "مستخدم", report_cases: "بلاغ", categories: "تصنيف", platform_settings: "إعداد", merchant_subscriptions: "اشتراك" };
+    const TABLES: Record<string, string> = { video_ads: "إعلان فيديو", listings: "إعلان", stores: "متجر", profiles: "مستخدم", report_cases: "بلاغ", categories: "تصنيف", platform_settings: "إعداد", merchant_subscriptions: "اشتراك" };
     const ACTIONS: Record<string, string> = { insert: "إضافة", update: "تعديل", delete: "حذف" };
     return <>{list.data!.map((e) => (
       <Card key={e.id} style={styles.item}>
