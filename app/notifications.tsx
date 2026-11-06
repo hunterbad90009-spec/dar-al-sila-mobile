@@ -21,6 +21,11 @@ const TYPES: Record<string, { title: string; icon: IconName }> = {
   listing_rejected: { title: "تم رفض إعلانك", icon: "cancel" },
   listing_suspended: { title: "تم إيقاف إعلانك", icon: "pause-circle" },
   listing_expired: { title: "انتهت صلاحية إعلانك", icon: "schedule" },
+  listing_held: { title: "إعلانك قيد المراجعة", icon: "hourglass-top" },
+  account_suspended: { title: "تم إيقاف حسابك", icon: "block" },
+  account_restored: { title: "تم رفع الإيقاف عن حسابك", icon: "check-circle" },
+  appeal_accepted: { title: "قُبل اعتراضك", icon: "check-circle" },
+  appeal_rejected: { title: "رُفض اعتراضك", icon: "gavel" },
   security: { title: "تنبيه أمني", icon: "security" },
 };
 
@@ -39,6 +44,7 @@ export default function NotificationsScreen() {
   const open = (n: AppNotification) => {
     if (!n.readAt) void markNotificationsRead([n.id]).then(() => { void client.invalidateQueries({ queryKey: keys.notifications }); void client.invalidateQueries({ queryKey: keys.unread }); });
     if (n.type === "chat_message") router.push("/(tabs)/messages");
+    else if (n.type === "account_suspended" || n.type === "account_restored" || n.type.startsWith("appeal_")) router.push("/(tabs)/profile");
     else if (n.listingId) router.push(n.type === "listing_approved" ? { pathname: "/listing/[id]", params: { id: n.listingId } } : "/(tabs)/myads");
   };
 
@@ -62,10 +68,10 @@ export default function NotificationsScreen() {
           const meta = TYPES[n.type] ?? { title: n.title, icon: "notifications" as IconName };
           return (
             <Pressable key={n.id} onPress={() => open(n)} style={({ pressed }) => [styles.item, { backgroundColor: colors.surface, borderColor: n.readAt ? colors.border : colors.accent, opacity: pressed ? 0.8 : 1 }]}>
-              <MaterialIcons name={meta.icon} size={24} color={n.type === "listing_rejected" || n.type === "listing_suspended" ? colors.error : colors.primary} />
+              <MaterialIcons name={meta.icon} size={24} color={["listing_rejected", "listing_suspended", "account_suspended", "appeal_rejected"].includes(n.type) ? colors.error : colors.primary} />
               <View style={{ flex: 1 }}>
                 <Text style={[styles.title, { color: colors.foreground }]}>{TYPES[n.type] ? t(meta.title) : n.title}</Text>
-                {n.body ? <Text style={[styles.body, { color: colors.muted }]} numberOfLines={3}>{n.body}</Text> : null}
+                {n.body ? <Text style={[styles.body, { color: colors.muted }]} numberOfLines={3}>{t(n.body)}</Text> : null}
                 <Text style={[styles.time, { color: colors.muted }]}>{timeAgo(n.createdAt)}</Text>
               </View>
               {!n.readAt ? <View style={[styles.dot, { backgroundColor: colors.accent }]} /> : null}

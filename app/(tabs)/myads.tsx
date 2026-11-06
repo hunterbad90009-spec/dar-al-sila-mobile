@@ -58,6 +58,10 @@ export default function MyAdsScreen() {
         return [<Button key="re" small icon="play-arrow" label={t("إعادة تفعيل")} onPress={() => status.mutate({ id: l.id, status: "active" })} />, edit, del];
       case "draft":
         return [<Button key="cont" small icon="edit-note" label={t("إكمال ونشر")} onPress={() => router.push({ pathname: "/(tabs)/post", params: { listingId: l.id } })} />, del];
+      case "rejected":
+        return l.moderationStatus === "auto_rejected"
+          ? [<Button key="fix" small icon="edit" label={t("تعديل وإعادة النشر")} onPress={() => router.push({ pathname: "/(tabs)/post", params: { listingId: l.id } })} />, del]
+          : [<Button key="appeal" small variant="outline" icon="gavel" label={t("اعتراض")} onPress={() => router.push({ pathname: "/appeal", params: { kind: "listing", listingId: l.id } })} />, del];
       case "pending":
         return [view, <Button key="wd" small variant="ghost" icon="undo" label={t("سحب للمسودات")} onPress={() => status.mutate({ id: l.id, status: "draft" })} />, del];
       default:
@@ -95,8 +99,8 @@ export default function MyAdsScreen() {
                 <Text style={[styles.meta, { color: colors.muted }]}>{t("{n} مشاهدة", { n: formatNumber(l.views) })} · {t("آخر تحديث {when}", { when: timeAgo(l.updatedAt) })}</Text>
               </View>
             </View>
-            {l.moderationReason && (l.status === "rejected" || l.status === "pending") ? <Text style={[styles.reason, { color: colors.error }]}>{t("ملاحظة المشرف")}: {l.moderationReason}</Text> : null}
-            {l.status === "rejected" ? <Text style={[styles.meta, { color: colors.muted }]}>{t("لإعادة النظر في القرار تواصل مع الدعم من مركز المساعدة.")}</Text> : null}
+            {l.moderationReason && (l.status === "rejected" || l.status === "pending") ? <Text style={[styles.reason, { color: colors.error }]}>{l.moderationStatus?.startsWith("auto_") ? t("الفحص التلقائي") : t("ملاحظة المشرف")}: {t(l.moderationReason)}</Text> : null}
+            {l.status === "rejected" ? <Text style={[styles.meta, { color: colors.muted }]}>{l.moderationStatus === "auto_rejected" ? t("عدّل الإعلان وأزل المحتوى المخالف ثم أعد نشره.") : t("إن رأيت أن القرار خطأ يمكنك الاعتراض عليه.")}</Text> : null}
             <View style={styles.actions}>{actionsFor(l)}</View>
           </View>
         ))}

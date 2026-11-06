@@ -67,6 +67,12 @@ export function useFavorites() {
   return { ids: ids.data ?? new Set<string>(), isSaved: (id: string) => Boolean(ids.data?.has(id)), toggle, isAuthenticated };
 }
 
+/** The signed-in user's active suspension (null when none). */
+export function useMyRestriction() {
+  const { isAuthenticated } = useAuth();
+  return useQuery({ queryKey: ["my-restriction"], queryFn: data.getMyRestriction, enabled: isAuthenticated, staleTime: 60_000 });
+}
+
 /** Unread messages + notifications for tab badges and header bells. */
 export function useUnreadCounts() {
   const { isAuthenticated } = useAuth();

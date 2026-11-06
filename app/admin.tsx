@@ -12,7 +12,7 @@ import { formatDate, formatNumber, pickName, t, timeAgo } from "@/lib/i18n";
 import { STORE_TYPES } from "@/lib/store-types";
 import { createStyles } from "@/lib/i18n/rtl";
 
-type Section = "overview" | "queue" | "listings" | "users" | "stores" | "categories" | "reports" | "audit" | "settings";
+type Section = "overview" | "queue" | "listings" | "users" | "stores" | "categories" | "reports" | "appeals" | "reviews" | "audit" | "settings";
 const SECTIONS: { key: Section; label: string; icon: keyof typeof MaterialIcons.glyphMap }[] = [
   { key: "overview", label: "نظرة عامة", icon: "dashboard" },
   { key: "queue", label: "قائمة المراجعة", icon: "fact-check" },
@@ -21,6 +21,8 @@ const SECTIONS: { key: Section; label: string; icon: keyof typeof MaterialIcons.
   { key: "stores", label: "المتاجر", icon: "storefront" },
   { key: "categories", label: "التصنيفات", icon: "category" },
   { key: "reports", label: "البلاغات", icon: "flag" },
+  { key: "appeals", label: "الاعتراضات", icon: "gavel" },
+  { key: "reviews", label: "تعليقات التقييم", icon: "rate-review" },
   { key: "audit", label: "سجل الإجراءات", icon: "history" },
   { key: "settings", label: "إعدادات المنصة", icon: "settings" },
 ];
@@ -60,6 +62,8 @@ export default function AdminScreen() {
         {section === "stores" && <StoresPanel />}
         {section === "categories" && <CategoriesPanel />}
         {section === "reports" && <ReportsPanel />}
+        {section === "appeals" && <AppealsPanel />}
+        {section === "reviews" && <ReviewsPanel />}
         {section === "audit" && <AuditPanel />}
         {section === "settings" && <SettingsPanel />}
         <View style={{ height: 30 }} />
@@ -190,6 +194,9 @@ function ListingsPanel({ fixedStatus }: { fixedStatus?: data.DbStatus }) {
               <View style={{ flex: 1 }}>
                 <Text style={[styles.itemTitle, { color: colors.foreground }]} numberOfLines={2}>{l.title}</Text>
                 <Text style={[styles.meta, { color: colors.muted }]}>{l.sellerName} · {l.price} · {timeAgo(l.createdAt)}</Text>
+                {l.moderationReason && (l.status === "pending" || l.status === "rejected") ? (
+                  <Text style={[styles.meta, { color: colors.warning, fontWeight: "800" }]}>{l.moderationStatus?.startsWith("auto_") ? t("الفحص التلقائي") : t("ملاحظة المشرف")}: {t(l.moderationReason)}</Text>
+                ) : null}
               </View>
               <StatusPill status={l.status} />
             </Pressable>
@@ -211,9 +218,22 @@ function UsersPanel() {
     const { user } = useAuth();
     const client = useQueryClient();
     const [q, setQ] = useState("");
+    const [suspending, setSuspending] = useState<string | null>(null);
+    const [days, setDays] = useState<number | null>(7);
+    const [reason, setReason] = useState("");
     const list = useQuery({ queryKey: ["admin", "users", q], queryFn: () => data.adminUsers({ q }) });
-    const setRole = useMutation({ mutationFn: data.adminSetRole, onSuccess: () => void client.invalidateQueries({ queryKey: ["admin", "users"] }), onError: (e) => notify(t("تعذر تغيير الدور"), data.friendlyError(e)) });
+    const refresh = () => void client.invalidateQueries({ queryKey: ["admin"] });
+    const setRole = useMutation({ mutationFn: data.adminSetRole, onSuccess: refresh, onError: (e) => notify(t("تعذر تغيير الدور"), data.friendlyError(e)) });
+    const suspend = useMutation({
+      mutationFn: data.adminSuspendUser,
+      onSuccess: () => { setSuspending(null); setReason(""); refresh(); notify(t("تم إيقاف الحساب")); },
+      onError: (e) => notify(t("تعذر إيقاف الحساب"), data.friendlyError(e)),
+    });
+    const lift = useMutation({ mutationFn: data.adminLiftSuspension, onSuccess: () => { refresh(); notify(t("تم رفع الإيقاف")); }, onError: (e) => notify(t("تعذر رفع الإيقاف"), data.friendlyError(e)) });
     const ROLE_TEXT = { user: "مستخدم", merchant: "تاجر", admin: "مشرف" } as const;
+    const DURATIONS: { days: number | null; label: string }[] = [
+      { days: 1, label: "يوم" }, { days: 7, label: "أسبوع" }, { days: 30, label: "شهر" }, { days: null, label: "دائم" },
+    ];
     return (
       <>
         <Input value={q} onChangeText={setQ} placeholder={t("ابحث بالاسم أو اسم المستخدم")} />
@@ -221,10 +241,30 @@ function UsersPanel() {
           <Card key={u.id} style={styles.item}>
             <Text style={[styles.itemTitle, { color: colors.foreground }]}>{u.name}</Text>
             <Text style={[styles.meta, { color: colors.muted }]}>{u.username ? `@${u.username} · ` : ""}{t("انضم {date}", { date: formatDate(u.createdAt) })}</Text>
+            {u.restriction ? (
+              <Text style={[styles.meta, { color: colors.error, fontWeight: "800" }]}>
+                {u.restriction.until ? t("موقوف حتى {date}", { date: formatDate(u.restriction.until) }) : t("موقوف بشكل دائم")} · {u.restriction.reason}
+              </Text>
+            ) : null}
             <View style={styles.actions}>
               {(["user", "merchant", "admin"] as const).map((r) => <Chip key={r} label={t(ROLE_TEXT[r])} active={u.role === r} onPress={() => u.role !== r && (u.id === user?.id ? notify(t("لا يمكنك تغيير دورك بنفسك.")) : setRole.mutate({ userId: u.id, role: r }))} />)}
               <Button small variant="ghost" icon="list" label={t("إعلاناته")} onPress={() => router.push({ pathname: "/seller/[id]", params: { id: u.id } })} />
+              {u.id !== user?.id ? (u.restriction
+                ? <Button small variant="outline" icon="lock-open" label={t("رفع الإيقاف")} loading={lift.isPending && lift.variables === u.id} onPress={() => lift.mutate(u.id)} />
+                : <Button small variant="danger" icon="block" label={t("إيقاف الحساب")} onPress={() => { setSuspending(suspending === u.id ? null : u.id); setReason(""); setDays(7); }} />) : null}
             </View>
+            {suspending === u.id ? (
+              <View style={[styles.suspendBox, { borderColor: colors.error }]}>
+                <Text style={[styles.meta, { color: colors.foreground, fontWeight: "800" }]}>{t("مدة الإيقاف")}</Text>
+                <View style={styles.actions}>{DURATIONS.map((d) => <Chip key={d.label} label={t(d.label)} active={days === d.days} onPress={() => setDays(d.days)} />)}</View>
+                <Field label={t("السبب (يظهر للمستخدم)")} required><Input value={reason} onChangeText={setReason} multiline placeholder={t("مثال: بلاغات احتيال مؤكدة على المشترين")} /></Field>
+                <Text style={[styles.meta, { color: colors.muted }]}>{t("لن يستطيع النشر أو المراسلة، وستُخفى إعلاناته عن الناس حتى انتهاء المدة.")}</Text>
+                <View style={styles.actions}>
+                  <Button small variant="danger" icon="block" label={t("تأكيد الإيقاف")} disabled={reason.trim().length < 3} loading={suspend.isPending} onPress={() => suspend.mutate({ userId: u.id, days, reason: reason.trim() })} />
+                  <Button small variant="ghost" label={t("إلغاء")} onPress={() => setSuspending(null)} />
+                </View>
+              </View>
+            ) : null}
           </Card>
         ))}
       </>
@@ -345,6 +385,81 @@ function ReportsPanel() {
     ))}</>;
   }
 
+function AppealsPanel() {
+    const colors = useColors();
+    const client = useQueryClient();
+    const [view, setView] = useState<"open" | "decided">("open");
+    const [notes, setNotes] = useState<Record<number, string>>({});
+    const list = useQuery({ queryKey: ["admin", "appeals", view], queryFn: () => data.adminAppeals(view) });
+    const decide = useMutation({
+      mutationFn: data.adminDecideAppeal,
+      onSuccess: (_r, v) => { void client.invalidateQueries({ queryKey: ["admin"] }); notify(v.accept ? t("قُبل الاعتراض") : t("رُفض الاعتراض"), t("وصل إشعار بالقرار إلى المستخدم.")); },
+      onError: (e) => notify(t("تعذر تنفيذ الإجراء"), data.friendlyError(e)),
+    });
+    const STATUS = { open: "قيد المراجعة", accepted: "مقبول", rejected: "مرفوض" } as const;
+    return (
+      <>
+        <View style={styles.actions}>
+          <Chip label={t("بانتظار القرار")} active={view === "open"} onPress={() => setView("open")} />
+          <Chip label={t("تم البت فيها")} active={view === "decided"} onPress={() => setView("decided")} />
+        </View>
+        <Text style={[styles.meta, { color: colors.muted, marginTop: 8 }]}>{t("راجع القرار الأصلي بعين جديدة. قبول الاعتراض يعيد الإعلان أو يرفع الإيقاف فورًا.")}</Text>
+        {list.isLoading ? <Loading /> : list.isError ? <ErrorState message={data.friendlyError(list.error)} /> : !list.data!.length ? <EmptyState icon="gavel" title={t("لا توجد اعتراضات")} /> : list.data!.map((a) => (
+          <Card key={a.id} style={styles.item}>
+            <View style={styles.itemHead}>
+              <MaterialIcons name={a.kind === "account" ? "person-off" : "article"} size={20} color={colors.primary} />
+              <Text style={[styles.itemTitle, { color: colors.foreground, flex: 1 }]}>{a.kind === "account" ? t("اعتراض على إيقاف حساب") : t("اعتراض على قرار إعلان")}</Text>
+              <Text style={[styles.meta, { color: colors.primary }]}>{t(STATUS[a.status])}</Text>
+            </View>
+            <Text style={[styles.meta, { color: colors.muted }]}>{a.userName} · {timeAgo(a.createdAt)}</Text>
+            {a.listingTitle ? <Pressable onPress={() => router.push({ pathname: "/listing/[id]", params: { id: a.listingId! } })}><Text style={[styles.link, { color: colors.primary }]}>{t("الإعلان: {title}", { title: a.listingTitle })}</Text></Pressable> : null}
+            {a.originalReason ? <Text style={[styles.meta, { color: colors.error }]}>{t("القرار الأصلي")}: {t(a.originalReason)}</Text> : null}
+            <Text style={[styles.body, { color: colors.foreground }]}>{a.statement}</Text>
+            {a.decisionNote ? <Text style={[styles.meta, { color: colors.muted }]}>{t("القرار: {text}", { text: a.decisionNote })}</Text> : null}
+            {a.status === "open" ? (
+              <>
+                <Input value={notes[a.id] ?? ""} onChangeText={(v) => setNotes((n) => ({ ...n, [a.id]: v }))} placeholder={t("سبب القرار (يظهر للمستخدم)")} style={{ marginTop: 10 }} />
+                <View style={styles.actions}>
+                  <Button small icon="check" label={t("قبول الاعتراض")} disabled={(notes[a.id] ?? "").trim().length < 3} onPress={() => decide.mutate({ id: a.id, accept: true, note: notes[a.id] ?? "" })} />
+                  <Button small variant="danger" icon="close" label={t("رفض الاعتراض")} disabled={(notes[a.id] ?? "").trim().length < 3} onPress={() => decide.mutate({ id: a.id, accept: false, note: notes[a.id] ?? "" })} />
+                </View>
+              </>
+            ) : null}
+          </Card>
+        ))}
+      </>
+    );
+  }
+
+function ReviewsPanel() {
+    const colors = useColors();
+    const client = useQueryClient();
+    const [view, setView] = useState<"review" | "visible" | "hidden">("review");
+    const list = useQuery({ queryKey: ["admin", "reviews", view], queryFn: () => data.adminRatingComments(view) });
+    const act = useMutation({ mutationFn: data.adminModerateRating, onSuccess: () => void client.invalidateQueries({ queryKey: ["admin", "reviews"] }), onError: (e) => notify(t("تعذر تنفيذ الإجراء"), data.friendlyError(e)) });
+    return (
+      <>
+        <View style={styles.actions}>
+          <Chip label={t("بانتظار المراجعة")} active={view === "review"} onPress={() => setView("review")} />
+          <Chip label={t("ظاهرة")} active={view === "visible"} onPress={() => setView("visible")} />
+          <Chip label={t("مخفية")} active={view === "hidden"} onPress={() => setView("hidden")} />
+        </View>
+        <Text style={[styles.meta, { color: colors.muted, marginTop: 8 }]}>{t("التقييم السلبي مسموح. أخفِ فقط الإساءة أو التهديد أو المعلومات الشخصية، لا الرأي السلبي.")}</Text>
+        {list.isLoading ? <Loading /> : list.isError ? <ErrorState message={data.friendlyError(list.error)} /> : !list.data!.length ? <EmptyState icon="rate-review" title={t("لا توجد تعليقات هنا")} /> : list.data!.map((r) => (
+          <Card key={`${r.listingId}:${r.reviewerId}`} style={styles.item}>
+            <Text style={[styles.itemTitle, { color: colors.accent }]}>{"★".repeat(r.rating)}{"☆".repeat(5 - r.rating)}</Text>
+            <Text style={[styles.body, { color: colors.foreground }]}>{r.text}</Text>
+            <Text style={[styles.meta, { color: colors.muted }]}>{t("من {from} إلى {to}", { from: r.reviewerName, to: r.sellerName })}{r.listingTitle ? ` · ${r.listingTitle}` : ""} · {timeAgo(r.createdAt)}</Text>
+            <View style={styles.actions}>
+              {r.status !== "visible" ? <Button small icon="visibility" label={t("إظهار")} onPress={() => act.mutate({ listingId: r.listingId, reviewerId: r.reviewerId, action: "approve" })} /> : null}
+              {r.status !== "hidden" ? <Button small variant="danger" icon="visibility-off" label={t("إخفاء")} onPress={() => act.mutate({ listingId: r.listingId, reviewerId: r.reviewerId, action: "hide" })} /> : null}
+            </View>
+          </Card>
+        ))}
+      </>
+    );
+  }
+
 function AuditPanel() {
     const colors = useColors();
     const list = useQuery({ queryKey: ["admin", "audit"], queryFn: data.adminAuditLog });
@@ -396,6 +511,7 @@ const STATUS_TEXT: Record<data.DbStatus, string> = {
 };
 
 const styles = createStyles({
+  suspendBox: { borderRadius: 12, borderWidth: 1, gap: 6, marginTop: 10, padding: 10 },
   lockIcon: { alignItems: "center", alignSelf: "center", borderRadius: 26, height: 76, justifyContent: "center", marginTop: 30, width: 76 },
   lockTitle: { fontSize: 20, fontWeight: "900", marginTop: 14, textAlign: "center" },
   lockText: { fontSize: 13, lineHeight: 21, marginBottom: 10, marginTop: 6, textAlign: "center" },

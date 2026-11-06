@@ -11,6 +11,7 @@ import { isRTL, t, useLanguage } from "@/lib/i18n";
 import { useUnreadCounts } from "@/lib/queries";
 import { createStyles } from "@/lib/i18n/rtl";
 import { AppearancePicker } from "@/components/appearance-picker";
+import { SuspensionNotice } from "@/components/suspension-notice";
 
 type IconName = keyof typeof MaterialIcons.glyphMap;
 type Item = { label: string; detail: string; icon: IconName; route: string; badge?: number; auth?: boolean };
@@ -94,6 +95,8 @@ export default function ProfileScreen() {
             </Pressable>
           ))}
         </View>
+
+        {isAuthenticated ? <SuspensionNotice /> : null}
 
         <Text style={[styles.sectionTitle, { color: colors.foreground }]}>{t("المظهر")}</Text>
         <AppearancePicker />

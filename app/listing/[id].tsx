@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { Image, Linking, Platform, Pressable, ScrollView, Share, Text, View, useWindowDimensions } from "react-native";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { ScreenContainer } from "@/components/screen-container";
-import { Button, Card, EmptyState, FavoriteButton, ListingStrip, Loading, SectionHeader, StatusPill, notify } from "@/components/market/ui";
+import { Button, Card, EmptyState, FavoriteButton, ListingStrip, Loading, SectionHeader, StatusPill, notify, Input } from "@/components/market/ui";
 import { useColors } from "@/hooks/use-colors";
 import { useAuth } from "@/hooks/use-auth";
 import { CONDITIONS, fieldsForCategory } from "@/lib/category-fields";
@@ -22,6 +22,7 @@ export default function ListingDetailsScreen() {
   const locations = useLocations();
   const [imageIndex, setImageIndex] = useState(0);
   const [rating, setRating] = useState(0);
+  const [comment, setComment] = useState("");
 
   const listing = useQuery({ queryKey: ["listing", id], queryFn: () => getListing({ publicId: id! }), enabled: Boolean(id) });
   const item = listing.data;
@@ -31,7 +32,15 @@ export default function ListingDetailsScreen() {
 
   const isOwner = Boolean(user && item && user.id === item.sellerId);
   const chat = useMutation({ mutationFn: startConversation, onSuccess: (conversationId) => router.push({ pathname: "/chat/[id]", params: { id: conversationId } }), onError: (e) => notify(t("تعذر بدء المحادثة"), friendlyError(e)) });
-  const rate = useMutation({ mutationFn: rateListing, onSuccess: () => { notify(t("تم التقييم"), t("شكرًا لمشاركتك تقييمك.")); void sellerRating.refetch(); }, onError: (e) => notify(t("تعذر التقييم"), friendlyError(e)) });
+  const rate = useMutation({
+    mutationFn: rateListing,
+    onSuccess: (r) => {
+      notify(t("تم التقييم"), r.commentStatus === "review" ? t("سيظهر تعليقك بعد مراجعة فريق دار السلع.") : t("شكرًا لمشاركتك تقييمك."));
+      setComment("");
+      void sellerRating.refetch();
+    },
+    onError: (e) => notify(t("تعذر التقييم"), friendlyError(e)),
+  });
 
   const loaded = Boolean(item);
   useEffect(() => {
@@ -161,7 +170,9 @@ export default function ListingDetailsScreen() {
             <Card style={{ marginTop: 14 }}>
               <Text style={[styles.reasonTitle, { color: colors.foreground }]}>{t("قيّم تجربتك مع البائع")}</Text>
               <View style={styles.stars}>{[1, 2, 3, 4, 5].map((value) => <Pressable key={value} hitSlop={6} onPress={() => setRating(value)}><MaterialIcons name={value <= rating ? "star" : "star-border"} size={30} color={colors.accent} /></Pressable>)}</View>
-              <Button small label={t("إرسال التقييم")} disabled={!rating} loading={rate.isPending} onPress={() => rate.mutate({ publicId: item.id, rating })} />
+              <Input value={comment} onChangeText={setComment} multiline maxLength={500} placeholder={t("تعليق اختياري عن تجربتك (يظهر للجميع)")} />
+              <Text style={[styles.sellerMeta, { color: colors.muted, marginBottom: 8 }]}>{t("اكتب رأيك بصدق واحترام. لا تكتب أرقام هواتف أو روابط.")}</Text>
+              <Button small label={t("إرسال التقييم")} disabled={!rating} loading={rate.isPending} onPress={() => rate.mutate({ publicId: item.id, rating, comment })} />
             </Card>
           ) : null}
 

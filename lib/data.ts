@@ -36,9 +36,18 @@ export function friendlyError(error: unknown, fallback = "تعذر إكمال ا
     INVALID_IMAGE_BYTES: "صيغة الصورة غير مدعومة.",
     MEDIA_SIZE_INVALID: "حجم الصورة كبير جدًا.",
     LOGIN_REQUIRED: "يجب تسجيل الدخول أولًا.",
+    CANNOT_SUSPEND_SELF: "لا يمكنك إيقاف حسابك.",
+    REASON_REQUIRED: "اكتب سبب القرار.",
+    ADMIN_ONLY: "هذا الإجراء للمشرف فقط.",
+    APPEAL_TOO_SHORT: "اشرح اعتراضك في 10 أحرف على الأقل.",
+    APPEAL_ALREADY_OPEN: "لديك اعتراض مفتوح على هذا القرار، وسيصلك الرد قريبًا.",
+    APPEAL_TOO_SOON: "رُفض اعتراضك مؤخرًا. يمكنك الاعتراض مرة أخرى بعد 7 أيام من القرار.",
+    NOTHING_TO_APPEAL: "لا يوجد قرار يمكن الاعتراض عليه.",
+    APPEAL_NOT_OPEN: "تم البت في هذا الاعتراض مسبقًا.",
+    RATING_NOT_FOUND: "التقييم غير موجود.",
   };
   for (const [code, text] of Object.entries(known)) if (message.includes(code)) return t(text);
-  if (/row-level security|permission denied|violates row-level/i.test(message)) return t("لا تملك صلاحية لهذا الإجراء.");
+  if (/row-level security|permission denied|violates row-level/i.test(message)) return t("لا تملك صلاحية لهذا الإجراء. إن كان حسابك موقوفًا تجد السبب في «حسابي».");
   if (/Failed to fetch|Network|fetch failed|ERR_/i.test(message)) return t("تعذر الاتصال. تحقق من الإنترنت وحاول مرة أخرى.");
   if (message && /[؀-ۿ]/.test(message)) return message;
   return t(fallback);
@@ -183,6 +192,8 @@ export type Listing = {
   images: { id: string; url: string }[];
   imageUrl: string | null;
   moderationReason: string | null;
+  /** auto_rejected / auto_review = automatic check; rejected / suspended / approved = admin. */
+  moderationStatus: string | null;
   version: number;
 };
 
@@ -217,6 +228,7 @@ function toListing(row: RawListing): Listing {
     images,
     imageUrl: images[0]?.url ?? null,
     moderationReason: typeof attrs.moderation_reason === "string" ? attrs.moderation_reason : null,
+    moderationStatus: typeof attrs.moderation_status === "string" ? attrs.moderation_status : null,
     version: typeof attrs.version === "number" ? attrs.version : 1,
   };
 }
@@ -392,7 +404,8 @@ export async function saveListing(input: ListingInput, publish: boolean): Promis
   (columns.attributes as Record<string, unknown>).version = version;
 
   let status: DbStatus = existing?.status ?? "draft";
-  if (publish && (status === "draft" || !existing)) status = (await autoPublish()) ? "active" : "pending";
+  const autoRejected = status === "rejected" && existing?.attributes?.moderation_status === "auto_rejected";
+  if (publish && (status === "draft" || autoRejected || !existing)) status = (await autoPublish()) ? "active" : "pending";
 
   if (existing && input.id) {
     const { data, error } = await supabase.from("listings").update({ ...columns, status }).eq("id", input.id).eq("user_id", userId).select(LISTING_SELECT).single();
@@ -549,9 +562,19 @@ export async function rateListing(input: { publicId: string; rating: number; com
   const userId = await requireUserId();
   const { data: listing } = await supabase.from("listings").select("user_id").eq("id", input.publicId).maybeSingle();
   if (!listing || listing.user_id === userId) throw new Error(t("لا يمكنك تقييم إعلانك."));
-  const { error } = await supabase.from("listing_ratings").upsert({ listing_id: input.publicId, reviewer_user_id: userId, seller_id: listing.user_id, rating: input.rating, comment: input.comment ?? null }, { onConflict: "listing_id,reviewer_user_id" });
+  const { error } = await supabase.from("listing_ratings").upsert({ listing_id: input.publicId, reviewer_user_id: userId, seller_id: listing.user_id, rating: input.rating, comment: input.comment?.trim() || null }, { onConflict: "listing_id,reviewer_user_id" });
   if (error) fail(error, "افتح الإعلان أولًا ثم قيّمه.");
-  return true;
+  // The server checks the comment; tell the user if it waits for review.
+  const { data: saved } = await supabase.from("listing_ratings").select("comment_status").eq("listing_id", input.publicId).eq("reviewer_user_id", userId).maybeSingle();
+  return { commentStatus: (saved?.comment_status as "none" | "visible" | "review" | "hidden" | undefined) ?? "none" };
+}
+
+export type SellerReview = { rating: number; comment: string | null; createdAt: string; reviewerName: string; listingTitle: string | null };
+
+/** Public reviews of a seller (comments waiting for review are never returned). */
+export async function getSellerReviews(sellerId: string): Promise<SellerReview[]> {
+  const { data, error } = await supabase.rpc("seller_reviews", { p_seller: sellerId, p_limit: 30 });
+  return rowsOrEmpty(data as Record<string, any>[] | null, error).map((r) => ({ rating: Number(r.rating), comment: r.comment, createdAt: r.created_at, reviewerName: r.reviewer_name || t("مستخدم دار السلع"), listingTitle: r.listing_title }));
 }
 
 export async function getSellerRating(sellerId: string): Promise<{ average: number; count: number }> {
@@ -950,12 +973,110 @@ export async function moderateListing(input: { id: string; action: "approve" | "
   return true;
 }
 
-export type AdminUser = { id: string; name: string; username: string | null; phone: string | null; role: "user" | "merchant" | "admin"; merchantStatus: string; createdAt: string };
+export type AdminUser = { id: string; name: string; username: string | null; phone: string | null; role: "user" | "merchant" | "admin"; merchantStatus: string; createdAt: string; restriction: Restriction | null };
 
 export async function adminUsers(input: { q?: string }): Promise<AdminUser[]> {
   // admin_list_profiles() is checked with is_admin() on the server and includes phone numbers.
-  const { data, error } = await supabase.rpc("admin_list_profiles", { q: input.q?.trim() || null });
-  return rowsOrEmpty(data as Record<string, any>[] | null, error).map((r) => ({ id: r.id, name: r.full_name || r.username || "—", username: r.username, phone: r.phone, role: r.role ?? "user", merchantStatus: r.merchant_status ?? "none", createdAt: r.created_at }));
+  const [{ data, error }, restrictions] = await Promise.all([
+    supabase.rpc("admin_list_profiles", { q: input.q?.trim() || null }),
+    supabase.from("account_restrictions").select("user_id, until, reason"),
+  ]);
+  const active = new Map<string, Restriction>();
+  for (const r of restrictions.data ?? []) if (!r.until || new Date(r.until).getTime() > Date.now()) active.set(r.user_id, { until: r.until, reason: r.reason });
+  return rowsOrEmpty(data as Record<string, any>[] | null, error).map((r) => ({ id: r.id, name: r.full_name || r.username || "—", username: r.username, phone: r.phone, role: r.role ?? "user", merchantStatus: r.merchant_status ?? "none", createdAt: r.created_at, restriction: active.get(r.id) ?? null }));
+}
+
+// ---------------------------------------------------------------------------
+// Account suspensions (0008): enforced by RLS; set only through audited admin functions.
+// ---------------------------------------------------------------------------
+
+export type Restriction = { until: string | null; reason: string };
+
+/** The signed-in user's active suspension, or null. */
+export async function getMyRestriction(): Promise<Restriction | null> {
+  if (!(await currentUserId())) return null;
+  const { data, error } = await supabase.rpc("my_restriction");
+  if (error) return null;
+  const row = (data as { until: string | null; reason: string }[] | null)?.[0];
+  return row ? { until: row.until, reason: row.reason } : null;
+}
+
+// ---------------------------------------------------------------------------
+// Appeals (0009)
+// ---------------------------------------------------------------------------
+
+export type AppealKind = "listing" | "account";
+export type Appeal = { id: number; kind: AppealKind; listingId: string | null; listingTitle: string | null; originalReason: string | null; statement: string; status: "open" | "accepted" | "rejected"; decisionNote: string | null; createdAt: string; decidedAt: string | null; userName?: string };
+
+function toAppeal(r: Record<string, any>): Appeal {
+  return { id: r.id, kind: r.kind, listingId: r.listing_id, listingTitle: r.listing?.title ?? null, originalReason: r.original_reason, statement: r.statement, status: r.status, decisionNote: r.decision_note, createdAt: r.created_at, decidedAt: r.decided_at };
+}
+
+export async function fileAppeal(input: { kind: AppealKind; listingId?: string | null; statement: string }) {
+  const { error } = await supabase.rpc("file_appeal", { p_kind: input.kind, p_listing: input.listingId ?? null, p_statement: input.statement.trim() });
+  if (error) fail(error);
+  return true;
+}
+
+/** The signed-in user's appeals, newest first (optionally for one subject). */
+export async function getMyAppeals(input: { kind?: AppealKind; listingId?: string | null } = {}): Promise<Appeal[]> {
+  const userId = await currentUserId();
+  if (!userId) return [];
+  let query = supabase.from("appeals").select("*, listing:listings(title)").eq("user_id", userId).order("created_at", { ascending: false }).limit(20);
+  if (input.kind) query = query.eq("kind", input.kind);
+  if (input.listingId) query = query.eq("listing_id", input.listingId);
+  const { data, error } = await query;
+  return rowsOrEmpty(data as Record<string, any>[] | null, error).map(toAppeal);
+}
+
+export async function adminAppeals(status: "open" | "decided"): Promise<Appeal[]> {
+  let query = supabase.from("appeals").select("*, listing:listings(title)").order("created_at", { ascending: status === "open" }).limit(100);
+  query = status === "open" ? query.eq("status", "open") : query.neq("status", "open");
+  const { data, error } = await query;
+  const rows = rowsOrEmpty(data as Record<string, any>[] | null, error);
+  const ids = [...new Set(rows.map((r) => r.user_id as string))];
+  const names = new Map<string, string>();
+  if (ids.length) {
+    const { data: people } = await supabase.from("profiles").select("id, full_name, username").in("id", ids);
+    for (const p of people ?? []) names.set(p.id, p.full_name || p.username || "—");
+  }
+  return rows.map((r) => ({ ...toAppeal(r), userName: names.get(r.user_id) ?? "—" }));
+}
+
+export async function adminDecideAppeal(input: { id: number; accept: boolean; note: string }) {
+  const { error } = await supabase.rpc("admin_decide_appeal", { p_id: input.id, p_accept: input.accept, p_note: input.note.trim() });
+  if (error) fail(error);
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// Rating comments moderation (0009)
+// ---------------------------------------------------------------------------
+
+export type AdminRatingComment = { listingId: string; reviewerId: string; sellerId: string; rating: number; text: string; status: "review" | "visible" | "hidden"; createdAt: string; reviewerName: string; sellerName: string; listingTitle: string | null };
+
+export async function adminRatingComments(status: "review" | "visible" | "hidden"): Promise<AdminRatingComment[]> {
+  const { data, error } = await supabase.rpc("admin_list_rating_comments", { p_status: status });
+  return rowsOrEmpty(data as Record<string, any>[] | null, error).map((r) => ({ listingId: r.listing_id, reviewerId: r.reviewer_user_id, sellerId: r.seller_id, rating: Number(r.rating), text: r.text ?? "", status: r.comment_status, createdAt: r.created_at, reviewerName: r.reviewer_name || "—", sellerName: r.seller_name || "—", listingTitle: r.listing_title }));
+}
+
+export async function adminModerateRating(input: { listingId: string; reviewerId: string; action: "approve" | "hide" }) {
+  const { error } = await supabase.rpc("admin_moderate_rating", { p_listing: input.listingId, p_reviewer: input.reviewerId, p_action: input.action });
+  if (error) fail(error);
+  return true;
+}
+
+/** days = null suspends permanently. */
+export async function adminSuspendUser(input: { userId: string; days: number | null; reason: string }) {
+  const { error } = await supabase.rpc("admin_suspend_user", { p_user: input.userId, p_days: input.days, p_reason: input.reason });
+  if (error) fail(error);
+  return true;
+}
+
+export async function adminLiftSuspension(userId: string) {
+  const { error } = await supabase.rpc("admin_lift_suspension", { p_user: userId });
+  if (error) fail(error);
+  return true;
 }
 
 export async function adminSetRole(input: { userId: string; role: "user" | "merchant" | "admin" }) {

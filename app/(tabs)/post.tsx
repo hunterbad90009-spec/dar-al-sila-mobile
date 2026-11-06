@@ -13,7 +13,8 @@ import { CONDITIONS, type Condition, NO_CONDITION_SLUGS, fieldsForCategory } fro
 import { addListingImage, checkListingText, friendlyError, getListing, type ListingInput, removeListingImage, saveListing, validateListing } from "@/lib/data";
 import { formatPrice, pickName, t } from "@/lib/i18n";
 import { prepareImageDataUrl } from "@/lib/prepare-image-data-url";
-import { keys, useCategories, useLocations } from "@/lib/queries";
+import { keys, useCategories, useLocations, useMyRestriction } from "@/lib/queries";
+import { SuspensionNotice } from "@/components/suspension-notice";
 import { useSelectedLocation } from "@/lib/user-location";
 import { createStyles } from "@/lib/i18n/rtl";
 
@@ -33,6 +34,7 @@ export default function PostScreen() {
   const colors = useColors();
   const client = useQueryClient();
   const { user, isAuthenticated, loading: authLoading } = useAuth();
+  const restriction = useMyRestriction();
   const categories = useCategories();
   const locations = useLocations();
   const { locationId: preferredLocation } = useSelectedLocation();
@@ -151,7 +153,7 @@ export default function PostScreen() {
         order += 1;
       }
       // 3) Publish (active, or pending when the platform requires review).
-      if (publish && (saved.status === "draft" || !editingId)) {
+      if (publish && (saved.status === "draft" || (saved.status === "rejected" && saved.moderationStatus === "auto_rejected") || !editingId)) {
         setProgress(t("جارٍ النشر..."));
         saved = await saveListing({ ...form, id: saved.id, condition: showCondition ? form.condition : null }, true);
       }
@@ -161,11 +163,13 @@ export default function PostScreen() {
       void client.invalidateQueries({ queryKey: ["listing", saved.id] });
       setPreview(false);
       setForm(emptyForm); setPhotos([]); setRemovedMedia([]);
-      notify(
-        !publish ? t("تم حفظ المسودة") : saved.status === "pending" ? t("أُرسل إعلانك للمراجعة") : t("تم نشر إعلانك"),
-        !publish ? t("يمكنك إكمالها من إعلاناتي.") : saved.status === "pending" ? t("سيظهر بعد موافقة المشرف، وسيصلك إشعار.") : t("إعلانك ظاهر الآن للمشترين."),
-      );
-      router.replace(publish ? { pathname: "/listing/[id]", params: { id: saved.id } } : "/(tabs)/myads");
+      // The server checks every published or edited listing; report what it decided.
+      const reason = saved.moderationReason ? t(saved.moderationReason) : null;
+      if (saved.status === "rejected") notify(t("تعذر نشر إعلانك"), reason ?? t("حاول مرة أخرى."));
+      else if (saved.status === "pending") notify(t("أُرسل إعلانك للمراجعة"), reason ?? t("سيظهر بعد موافقة المشرف، وسيصلك إشعار."));
+      else if (!publish && saved.status === "draft") notify(t("تم حفظ المسودة"), t("يمكنك إكمالها من إعلاناتي."));
+      else notify(editingId ? t("تم حفظ التعديلات") : t("تم نشر إعلانك"), t("إعلانك ظاهر الآن للمشترين."));
+      router.replace(saved.status === "active" ? { pathname: "/listing/[id]", params: { id: saved.id } } : "/(tabs)/myads");
     } catch (error) {
       notify(t("تعذر حفظ الإعلان"), friendlyError(error));
     } finally {
@@ -187,6 +191,7 @@ export default function PostScreen() {
 
   if (authLoading || loadingExisting) return <ScreenContainer><Loading /></ScreenContainer>;
   if (!isAuthenticated) return <ScreenContainer className="px-4"><Header title={t("أضف إعلان")} /><LoginRequired text={t("سجّل الدخول لنشر إعلانك وإدارته.")} /></ScreenContainer>;
+  if (restriction.data) return <ScreenContainer className="px-4"><Header title={t("أضف إعلان")} /><SuspensionNotice /></ScreenContainer>;
 
   const publishLabel = editingId && existingStatus && existingStatus !== "draft" ? t("حفظ التعديلات") : t("معاينة ونشر");
 
