@@ -5,6 +5,8 @@ import { Image, Pressable, ScrollView, Switch, Text, View } from "react-native";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { ScreenContainer } from "@/components/screen-container";
 import { VideoAdsPanel } from "@/components/admin/video-ads-panel";
+import { AnnouncementTicker } from "@/components/announcement-ticker";
+import { type AnnouncementFont, ANNOUNCEMENT_FONTS } from "@/lib/announcement-fonts";
 import { Button, Card, Chip, EmptyState, ErrorState, Field, Header, Input, Loading, StatusPill, notify, useGrid } from "@/components/market/ui";
 import { useAuth } from "@/hooks/use-auth";
 import { useColors } from "@/hooks/use-colors";
@@ -493,15 +495,19 @@ function SettingsPanel() {
     const [en, setEn] = useState<string | null>(null);
     const [auto, setAuto] = useState<boolean | null>(null);
     const [aiMode, setAiMode] = useState<data.AiMode | null>(null);
+    const [font, setFont] = useState<AnnouncementFont | null>(null);
     const save = useMutation({ mutationFn: data.adminSaveSettings, onSuccess: () => { notify(t("تم حفظ الإعدادات")); void client.invalidateQueries({ queryKey: ["admin", "settings"] }); void client.invalidateQueries({ queryKey: ["announcement"] }); }, onError: (e) => notify(t("تعذر حفظ الإعدادات"), data.friendlyError(e)) });
     if (settings.isLoading) return <Loading />;
     if (settings.isError) return <ErrorState message={data.friendlyError(settings.error)} />;
     const s = settings.data!;
-    const vAr = ar ?? s.announcement.ar; const vEn = en ?? s.announcement.en; const vAuto = auto ?? s.autoPublish; const vAi = aiMode ?? s.aiMode;
+    const vAr = ar ?? s.announcement.ar; const vEn = en ?? s.announcement.en; const vAuto = auto ?? s.autoPublish; const vAi = aiMode ?? s.aiMode; const vFont = font ?? s.announcement.font;
     return (
       <Card>
         <Field label={t("إعلان المنصة بالعربية")} hint={t("يظهر في الرئيسية والإشعارات. اتركه فارغًا لإخفائه.")}><Input value={vAr} onChangeText={setAr} multiline multilineHeight={80} /></Field>
         <Field label={t("إعلان المنصة بالإنجليزية")}><Input value={vEn} onChangeText={setEn} multiline multilineHeight={80} /></Field>
+        <Text style={[styles.itemTitle, { color: colors.foreground, marginTop: 14 }]}>{t("خط الإعلان")}</Text>
+        <View style={styles.actions}>{ANNOUNCEMENT_FONTS.map((f) => <Chip key={f.key} label={t(f.label)} active={vFont === f.key} onPress={() => setFont(f.key)} />)}</View>
+        {vAr || vEn ? <AnnouncementTicker text={vAr || vEn} font={vFont} /> : null}
         <View style={[styles.itemHead, { marginTop: 18 }]}>
           <View style={{ flex: 1 }}>
             <Text style={[styles.itemTitle, { color: colors.foreground }]}>{t("النشر الفوري للإعلانات")}</Text>
@@ -513,7 +519,7 @@ function SettingsPanel() {
         <View style={styles.actions}>{AI_MODES.map((m) => <Chip key={m.key} label={t(m.label)} active={vAi === m.key} onPress={() => setAiMode(m.key)} />)}</View>
         <Text style={[styles.meta, { color: colors.muted }]}>{t(AI_MODES.find((m) => m.key === vAi)!.hint)}</Text>
         <Text style={[styles.meta, { color: colors.muted }]}>{t("يحتاج مفتاح Anthropic في أسرار دوال Supabase باسم ANTHROPIC_API_KEY.")}</Text>
-        <Button label={t("حفظ الإعدادات")} loading={save.isPending} onPress={() => save.mutate({ announcement: { ar: vAr, en: vEn }, autoPublish: vAuto, aiMode: vAi })} style={{ marginTop: 18 }} />
+        <Button label={t("حفظ الإعدادات")} loading={save.isPending} onPress={() => save.mutate({ announcement: { ar: vAr, en: vEn, font: vFont }, autoPublish: vAuto, aiMode: vAi })} style={{ marginTop: 18 }} />
       </Card>
     );
 }

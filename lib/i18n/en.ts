@@ -780,4 +780,9 @@ export const en: Record<string, string> = {
   "حُفظ الإعلان لكنه لن يظهر": "Ad saved, but it won't show",
   "لن يظهر الفيديو في الصفحة الرئيسية حتى تؤكد «تم استلام المبلغ».": "The video won't show on the home page until you confirm \"Payment received\".",
   "الإعلان موقوف. فعّله ليظهر في الصفحة الرئيسية.": "The ad is paused. Enable it to show on the home page.",
+  "خط الإعلان": "Announcement font",
+  "الافتراضي": "Default",
+  "تجوال": "Tajawal",
+  "أميري": "Amiri",
+  "لاله‌زار": "Lalezar",
 };

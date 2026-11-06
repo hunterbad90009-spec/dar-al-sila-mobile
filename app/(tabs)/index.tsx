@@ -5,6 +5,7 @@ import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { ScreenContainer } from "@/components/screen-container";
 import { GoldSheen } from "@/components/gold-sheen";
 import { VideoAdBanner } from "@/components/video-ad-banner";
+import { AnnouncementTicker } from "@/components/announcement-ticker";
 import { EmptyState, ErrorState, ListingGrid, ListingStrip, Loading, SectionHeader, useGrid } from "@/components/market/ui";
 import { useColors } from "@/hooks/use-colors";
 import { useColorScheme } from "@/hooks/use-color-scheme";
@@ -71,10 +72,7 @@ export default function HomeScreen() {
         </Pressable>
 
         {announcementText ? (
-          <View style={[styles.announcement, { backgroundColor: colors.accentSoft, borderColor: colors.accent }]}>
-            <MaterialIcons name="campaign" size={20} color={colors.foreground} />
-            <Text style={[styles.announcementText, { color: colors.foreground }]}>{announcementText}</Text>
-          </View>
+          <AnnouncementTicker text={announcementText} font={announcement.data?.font ?? "default"} />
         ) : null}
 
         <SectionHeader title={t("التصنيفات")} action={t("كل التصنيفات")} onAction={() => router.push("/(tabs)/categories")} />
@@ -164,8 +162,6 @@ const styles = createStyles({
   searchWrap: { alignItems: "center", borderRadius: 17, borderWidth: 1, flexDirection: "row-reverse", gap: 8, height: 56, marginTop: 12, paddingHorizontal: 10 },
   searchPlaceholder: { flex: 1, fontSize: 14, paddingHorizontal: 6, textAlign: "right" },
   filterButton: { alignItems: "center", borderRadius: 12, height: 39, justifyContent: "center", width: 39 },
-  announcement: { alignItems: "center", borderRadius: 14, borderWidth: 1, flexDirection: "row-reverse", gap: 8, marginTop: 14, padding: 12 },
-  announcementText: { flex: 1, fontSize: 13, fontWeight: "700", lineHeight: 20, textAlign: "right" },
   categoriesGrid: { flexDirection: "row-reverse", flexWrap: "wrap", gap: 9 },
   categoryCard: { alignItems: "center", borderRadius: 17, gap: 5, justifyContent: "center", minHeight: 92, paddingHorizontal: 6 },
   categoryText: { fontSize: 11, fontWeight: "800", textAlign: "center" },

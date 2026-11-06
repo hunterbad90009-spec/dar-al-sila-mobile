@@ -10,6 +10,7 @@ import { isSupportedImageDataUrl } from "@/lib/image-moderation";
 import { getMarketplacePermissions } from "@/shared/marketplace-permissions";
 import { formatPrice, pickName, t } from "@/lib/i18n";
 import type { Condition } from "@/lib/category-fields";
+import { type AnnouncementFont, asAnnouncementFont } from "@/lib/announcement-fonts";
 
 // ---------------------------------------------------------------------------
 // Errors & helpers
@@ -865,10 +866,10 @@ export async function markNotificationsRead(ids?: number[]) {
   return true;
 }
 
-export async function getAnnouncement(): Promise<{ ar: string; en: string } | null> {
+export async function getAnnouncement(): Promise<{ ar: string; en: string; font: AnnouncementFont } | null> {
   const { data } = await supabase.from("platform_settings").select("value").eq("key", "announcement").maybeSingle();
-  const value = data?.value as { ar?: string; en?: string } | undefined;
-  return value && (value.ar || value.en) ? { ar: value.ar ?? "", en: value.en ?? "" } : null;
+  const value = data?.value as { ar?: string; en?: string; font?: string } | undefined;
+  return value && (value.ar || value.en) ? { ar: value.ar ?? "", en: value.en ?? "", font: asAnnouncementFont(value.font) } : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -1161,18 +1162,18 @@ export async function adminAuditLog(): Promise<AuditEntry[]> {
   });
 }
 
-export async function adminSettings(): Promise<{ announcement: { ar: string; en: string }; autoPublish: boolean; aiMode: AiMode }> {
+export async function adminSettings(): Promise<{ announcement: { ar: string; en: string; font: AnnouncementFont }; autoPublish: boolean; aiMode: AiMode }> {
   const { data } = await supabase.from("platform_settings").select("key, value");
   const map = Object.fromEntries((data ?? []).map((r) => [r.key, r.value]));
-  const ann = (map.announcement ?? {}) as { ar?: string; en?: string };
+  const ann = (map.announcement ?? {}) as { ar?: string; en?: string; font?: string };
   const ai = map.ai_moderation === "shadow" || map.ai_moderation === "enforce" ? map.ai_moderation : "off";
-  return { announcement: { ar: ann.ar ?? "", en: ann.en ?? "" }, autoPublish: map.listing_auto_publish !== false, aiMode: ai };
+  return { announcement: { ar: ann.ar ?? "", en: ann.en ?? "", font: asAnnouncementFont(ann.font) }, autoPublish: map.listing_auto_publish !== false, aiMode: ai };
 }
 
-export async function adminSaveSettings(input: { announcement: { ar: string; en: string }; autoPublish: boolean; aiMode: AiMode }) {
+export async function adminSaveSettings(input: { announcement: { ar: string; en: string; font: AnnouncementFont }; autoPublish: boolean; aiMode: AiMode }) {
   const now = new Date().toISOString();
   const { error } = await supabase.from("platform_settings").upsert([
-    { key: "announcement", value: { ar: input.announcement.ar.trim().slice(0, 300), en: input.announcement.en.trim().slice(0, 300) }, updated_at: now },
+    { key: "announcement", value: { ar: input.announcement.ar.trim().slice(0, 300), en: input.announcement.en.trim().slice(0, 300), font: asAnnouncementFont(input.announcement.font) }, updated_at: now },
     { key: "listing_auto_publish", value: input.autoPublish, updated_at: now },
     { key: "ai_moderation", value: input.aiMode, updated_at: now },
   ]);
