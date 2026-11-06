@@ -11,7 +11,7 @@ import { createStyles } from "@/lib/i18n/rtl";
  * It is an overlay rather than a route because "/" already belongs to the home tab
  * (app/(tabs)/index.tsx shadows app/index.tsx), so a route-based intro never shows.
  */
-const OPENING_VIDEO = require("@/assets/videos/souq-muscat-opening.mp4");
+const OPENING_VIDEO = require("@/assets/videos/dar-al-sila-opening.mp4");
 // Safety net if the video never starts or never reports its end (slow network, blocked autoplay).
 const FALLBACK_MS = 9000;
 
