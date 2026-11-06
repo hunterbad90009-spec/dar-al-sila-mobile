@@ -725,4 +725,5 @@ export const en: Record<string, string> = {
   "فحص الإعلانات بالذكاء الاصطناعي": "AI listing review",
   "يحتاج مفتاح Anthropic في أسرار دوال Supabase باسم ANTHROPIC_API_KEY.": "Requires an Anthropic key in the Supabase function secrets named ANTHROPIC_API_KEY.",
   "يراجع فريق دار السلع الإعلان قبل إبقائه منشورًا بعد فحص آلي للنص والصور.": "After an automated check of the text and photos, the Dar Al Sila team is reviewing the listing before keeping it published.",
+  "المتابعة باستخدام Google": "Continue with Google",
 };

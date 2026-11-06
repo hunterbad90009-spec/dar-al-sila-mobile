@@ -5,7 +5,7 @@ import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { ScreenContainer } from "@/components/screen-container";
 import { Button, Field, Header, Input, notify } from "@/components/market/ui";
 import { useColors } from "@/hooks/use-colors";
-import { startFacebookLogin } from "@/constants/oauth";
+import { startFacebookLogin, startGoogleLogin } from "@/constants/oauth";
 import { supabase } from "@/lib/supabase";
 import { t } from "@/lib/i18n";
 import { createStyles } from "@/lib/i18n/rtl";
@@ -16,7 +16,7 @@ export default function LoginScreen() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
-  const [busy, setBusy] = useState<null | "email" | "facebook">(null);
+  const [busy, setBusy] = useState<null | "email" | "facebook" | "google">(null);
   const [error, setError] = useState<string | null>(null);
 
   const done = () => (router.canGoBack() ? router.back() : router.replace("/(tabs)"));
@@ -51,10 +51,11 @@ export default function LoginScreen() {
     }
   };
 
-  const facebook = async () => {
-    setBusy("facebook");
+  const social = async (provider: "facebook" | "google") => {
+    setBusy(provider);
+    setError(null);
     try {
-      await startFacebookLogin();
+      await (provider === "google" ? startGoogleLogin() : startFacebookLogin());
       if (Platform.OS !== "web") done();
     } catch (e) {
       setError(e instanceof Error ? e.message : t("تحقق من اتصال الإنترنت ثم حاول مرة أخرى."));
@@ -90,8 +91,8 @@ export default function LoginScreen() {
           </View>
 
           <View style={styles.divider}><View style={[styles.line, { backgroundColor: colors.border }]} /><Text style={[styles.dividerText, { color: colors.muted }]}>{t("أو")}</Text><View style={[styles.line, { backgroundColor: colors.border }]} /></View>
-          <Button icon="facebook" label={t("المتابعة باستخدام Facebook")} loading={busy === "facebook"} disabled={Boolean(busy)} onPress={facebook} style={{ backgroundColor: "#1877F2", borderColor: "#1877F2" }} />
-          <View style={[styles.soon, { borderColor: colors.border }]}><Text style={[styles.soonText, { color: colors.muted }]}>{t("تسجيل الدخول عبر Google — قيد الإعداد")}</Text></View>
+          <Button icon="facebook" label={t("المتابعة باستخدام Facebook")} loading={busy === "facebook"} disabled={Boolean(busy)} onPress={() => social("facebook")} style={{ backgroundColor: "#1877F2", borderColor: "#1877F2" }} />
+          <Button variant="outline" icon="account-circle" label={t("المتابعة باستخدام Google")} loading={busy === "google"} disabled={Boolean(busy)} onPress={() => social("google")} style={{ marginTop: 10 }} />
           <Text style={[styles.privacy, { color: colors.muted }]}>{t("بالمتابعة، توافق على شروط الاستخدام وسياسة الخصوصية.")}</Text>
           <View style={styles.legalRow}>
             <Pressable onPress={() => router.push("/terms")}><Text style={[styles.legal, { color: colors.primary }]}>{t("شروط الاستخدام")}</Text></Pressable>
@@ -114,8 +115,6 @@ const styles = createStyles({
   divider: { alignItems: "center", flexDirection: "row", gap: 10, marginVertical: 20 },
   line: { flex: 1, height: 1 },
   dividerText: { fontSize: 12, fontWeight: "700" },
-  soon: { alignItems: "center", borderRadius: 14, borderWidth: 1, marginTop: 10, paddingVertical: 14 },
-  soonText: { fontSize: 13, fontWeight: "700" },
   privacy: { fontSize: 11, lineHeight: 17, marginTop: 18, textAlign: "center" },
   legalRow: { flexDirection: "row", gap: 18, justifyContent: "center", marginTop: 6 },
   legal: { fontSize: 12, fontWeight: "800" },
