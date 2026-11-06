@@ -46,7 +46,13 @@ export function VideoAdsPanel() {
 
   const save = useMutation({
     mutationFn: (d: Draft) => adminSaveVideoAd(d, d.previousPath),
-    onSuccess: () => { setDraft(null); refresh(); notify(t("تم حفظ إعلان الفيديو")); },
+    onSuccess: (_, d) => {
+      setDraft(null);
+      refresh();
+      if (!d.paymentConfirmed) notify(t("حُفظ الإعلان لكنه لن يظهر"), t("لن يظهر الفيديو في الصفحة الرئيسية حتى تؤكد «تم استلام المبلغ»."));
+      else if (!d.isActive) notify(t("حُفظ الإعلان لكنه لن يظهر"), t("الإعلان موقوف. فعّله ليظهر في الصفحة الرئيسية."));
+      else notify(t("تم حفظ إعلان الفيديو"));
+    },
     onError: (e) => notify(t("تعذر حفظ الإعلان"), e instanceof Error ? e.message : t("حاول مرة أخرى.")),
   });
   const toggle = useMutation({ mutationFn: (a: AdminVideoAd) => adminSetVideoAdActive(a.id, !a.isActive), onSuccess: refresh, onError: () => notify(t("تعذر تنفيذ الإجراء")) });
@@ -85,7 +91,7 @@ export function VideoAdsPanel() {
         <View style={[styles.switchRow, { borderColor: colors.border }]}>
           <View style={{ flex: 1 }}>
             <Text style={[styles.label, { color: colors.foreground }]}>{t("تم استلام المبلغ")}</Text>
-            <Text style={[styles.meta, { color: colors.muted }]}>{t("لا يظهر الإعلان قبل تأكيد الدفع.")}</Text>
+            <Text style={[styles.meta, { color: draft.paymentConfirmed ? colors.muted : colors.error }]}>{t("لا يظهر الإعلان قبل تأكيد الدفع.")}</Text>
           </View>
           <Switch value={draft.paymentConfirmed} onValueChange={(v) => set("paymentConfirmed", v)} trackColor={{ true: colors.primary, false: colors.border }} />
         </View>
