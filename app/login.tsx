@@ -1,7 +1,6 @@
 import { router } from "expo-router";
 import { useState } from "react";
-import { KeyboardAvoidingView, Platform, Pressable, ScrollView, Text, View } from "react-native";
-import MaterialIcons from "@expo/vector-icons/MaterialIcons";
+import { Image, KeyboardAvoidingView, Platform, Pressable, ScrollView, Text, View } from "react-native";
 import { ScreenContainer } from "@/components/screen-container";
 import { Button, Field, Header, Input, notify } from "@/components/market/ui";
 import { useColors } from "@/hooks/use-colors";
@@ -71,7 +70,7 @@ export default function LoginScreen() {
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
         <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.content}>
           <Header title={title} />
-          <View style={[styles.logo, { backgroundColor: colors.primary }]}><MaterialIcons name="shopping-bag" size={40} color={colors.accent} /></View>
+          <Image source={require("@/assets/images/dar-al-sila-logo.png")} style={styles.logo} resizeMode="contain" accessibilityLabel={t("دار السلع")} />
           <Text style={[styles.heading, { color: colors.foreground }]}>{t("مرحبًا بك في دار السلع")}</Text>
           <Text style={[styles.subtitle, { color: colors.muted }]}>{t("سجّل الدخول لحفظ إعلاناتك ومراسلة البائعين وإدارة متجرك.")}</Text>
 
@@ -106,7 +105,7 @@ export default function LoginScreen() {
 
 const styles = createStyles({
   content: { paddingBottom: 40 },
-  logo: { alignItems: "center", alignSelf: "center", borderRadius: 28, height: 82, justifyContent: "center", marginTop: 12, width: 82 },
+  logo: { alignSelf: "center", height: 104, marginTop: 12, width: 104 },
   heading: { fontSize: 23, fontWeight: "900", marginTop: 16, textAlign: "center" },
   subtitle: { fontSize: 13, lineHeight: 21, marginTop: 6, textAlign: "center" },
   error: { fontSize: 13, fontWeight: "700", marginTop: 12, textAlign: "right" },

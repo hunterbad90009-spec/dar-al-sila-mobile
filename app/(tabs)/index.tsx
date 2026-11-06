@@ -40,10 +40,7 @@ export default function HomeScreen() {
       <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false} contentContainerStyle={styles.content}>
         <View style={styles.header}>
           <View style={styles.brandBlock}>
-            <View style={[styles.logoMark, { backgroundColor: colors.primary }]}>
-              <MaterialIcons name="shopping-bag" size={24} color={colors.accent} />
-              <GoldSheen width={46} height={46} />
-            </View>
+            <Image source={require("@/assets/images/dar-al-sila-logo.png")} style={styles.logoMark} resizeMode="contain" accessibilityLabel={t("دار السلع")} />
             <View style={{ flex: 1, minWidth: 0 }}>
               <Text style={[styles.brand, { color: colors.foreground }]}>{t("دار السلع")}</Text>
               <Text numberOfLines={1} style={[styles.greeting, { color: colors.muted }]}>{t("سوق عُمان لكل ما تحتاجه")}</Text>
@@ -152,7 +149,7 @@ const styles = createStyles({
   content: { padding: 18, paddingBottom: 110 },
   header: { alignItems: "center", flexDirection: "row-reverse", justifyContent: "space-between", marginTop: 4 },
   brandBlock: { alignItems: "center", flex: 1, flexDirection: "row-reverse", gap: 10, minWidth: 0 },
-  logoMark: { alignItems: "center", borderRadius: 15, height: 46, justifyContent: "center", overflow: "hidden", transform: [{ rotate: "-5deg" }], width: 46 },
+  logoMark: { height: 58, width: 58 },
   brand: { fontSize: 21, fontWeight: "900", textAlign: "right" },
   greeting: { fontSize: 11, marginTop: 2, textAlign: "right" },
   headerActions: { flexDirection: "row", gap: 8 },

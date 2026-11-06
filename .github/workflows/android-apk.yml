@@ -2,9 +2,8 @@ name: Build Android APK
 
 # Builds an installable APK (test build, signed with the Expo template's debug key)
 # and publishes it as the "android-latest" release, so it can be downloaded on a phone.
+# Manual only: run it from the Actions tab ("Run workflow") when a new APK is wanted.
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
