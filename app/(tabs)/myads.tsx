@@ -7,7 +7,7 @@ import { ScreenContainer } from "@/components/screen-container";
 import { Button, Chip, EmptyState, ErrorState, Header, Loading, LoginRequired, StatusPill, confirmAction, notify } from "@/components/market/ui";
 import { useAuth } from "@/hooks/use-auth";
 import { useColors } from "@/hooks/use-colors";
-import { type DbStatus, deleteListing, friendlyError, getMyListings, getMyStore, type Listing, setListingStatus } from "@/lib/data";
+import { type DbStatus, deleteListing, friendlyError, getMyListings, getMyStore, type Listing, setListingStatus, isAutomaticDecision } from "@/lib/data";
 import { formatNumber, t, timeAgo } from "@/lib/i18n";
 import { keys } from "@/lib/queries";
 import { createStyles } from "@/lib/i18n/rtl";
@@ -99,7 +99,7 @@ export default function MyAdsScreen() {
                 <Text style={[styles.meta, { color: colors.muted }]}>{t("{n} مشاهدة", { n: formatNumber(l.views) })} · {t("آخر تحديث {when}", { when: timeAgo(l.updatedAt) })}</Text>
               </View>
             </View>
-            {l.moderationReason && (l.status === "rejected" || l.status === "pending") ? <Text style={[styles.reason, { color: colors.error }]}>{l.moderationStatus?.startsWith("auto_") ? t("الفحص التلقائي") : t("ملاحظة المشرف")}: {t(l.moderationReason)}</Text> : null}
+            {l.moderationReason && (l.status === "rejected" || l.status === "pending") ? <Text style={[styles.reason, { color: colors.error }]}>{isAutomaticDecision(l.moderationStatus) ? t("الفحص التلقائي") : t("ملاحظة المشرف")}: {t(l.moderationReason)}</Text> : null}
             {l.status === "rejected" ? <Text style={[styles.meta, { color: colors.muted }]}>{l.moderationStatus === "auto_rejected" ? t("عدّل الإعلان وأزل المحتوى المخالف ثم أعد نشره.") : t("إن رأيت أن القرار خطأ يمكنك الاعتراض عليه.")}</Text> : null}
             <View style={styles.actions}>{actionsFor(l)}</View>
           </View>

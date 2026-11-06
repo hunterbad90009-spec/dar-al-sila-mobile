@@ -194,8 +194,13 @@ function ListingsPanel({ fixedStatus }: { fixedStatus?: data.DbStatus }) {
               <View style={{ flex: 1 }}>
                 <Text style={[styles.itemTitle, { color: colors.foreground }]} numberOfLines={2}>{l.title}</Text>
                 <Text style={[styles.meta, { color: colors.muted }]}>{l.sellerName} · {l.price} · {timeAgo(l.createdAt)}</Text>
+                {l.ai ? (
+                  <Text style={[styles.meta, { color: l.ai.verdict === "ok" ? colors.success : l.ai.verdict === "error" ? colors.muted : colors.error, fontWeight: "800" }]}>
+                    {t("رأي الذكاء الاصطناعي")}: {t(AI_VERDICT[l.ai.verdict])}{l.ai.confidence !== null && l.ai.verdict !== "error" ? ` (${Math.round(l.ai.confidence * 100)}%)` : ""}{l.ai.reason ? ` · ${l.ai.reason}` : ""}{l.ai.applied ? ` · ${t("نُقل للمراجعة")}` : ""}
+                  </Text>
+                ) : null}
                 {l.moderationReason && (l.status === "pending" || l.status === "rejected") ? (
-                  <Text style={[styles.meta, { color: colors.warning, fontWeight: "800" }]}>{l.moderationStatus?.startsWith("auto_") ? t("الفحص التلقائي") : t("ملاحظة المشرف")}: {t(l.moderationReason)}</Text>
+                  <Text style={[styles.meta, { color: colors.warning, fontWeight: "800" }]}>{data.isAutomaticDecision(l.moderationStatus) ? t("الفحص التلقائي") : t("ملاحظة المشرف")}: {t(l.moderationReason)}</Text>
                 ) : null}
               </View>
               <StatusPill status={l.status} />
@@ -484,11 +489,12 @@ function SettingsPanel() {
     const [ar, setAr] = useState<string | null>(null);
     const [en, setEn] = useState<string | null>(null);
     const [auto, setAuto] = useState<boolean | null>(null);
+    const [aiMode, setAiMode] = useState<data.AiMode | null>(null);
     const save = useMutation({ mutationFn: data.adminSaveSettings, onSuccess: () => { notify(t("تم حفظ الإعدادات")); void client.invalidateQueries({ queryKey: ["admin", "settings"] }); void client.invalidateQueries({ queryKey: ["announcement"] }); }, onError: (e) => notify(t("تعذر حفظ الإعدادات"), data.friendlyError(e)) });
     if (settings.isLoading) return <Loading />;
     if (settings.isError) return <ErrorState message={data.friendlyError(settings.error)} />;
     const s = settings.data!;
-    const vAr = ar ?? s.announcement.ar; const vEn = en ?? s.announcement.en; const vAuto = auto ?? s.autoPublish;
+    const vAr = ar ?? s.announcement.ar; const vEn = en ?? s.announcement.en; const vAuto = auto ?? s.autoPublish; const vAi = aiMode ?? s.aiMode;
     return (
       <Card>
         <Field label={t("إعلان المنصة بالعربية")} hint={t("يظهر في الرئيسية والإشعارات. اتركه فارغًا لإخفائه.")}><Input value={vAr} onChangeText={setAr} multiline multilineHeight={80} /></Field>
@@ -500,10 +506,21 @@ function SettingsPanel() {
           </View>
           <Switch value={vAuto} onValueChange={setAuto} trackColor={{ true: colors.primary, false: colors.border }} />
         </View>
-        <Button label={t("حفظ الإعدادات")} loading={save.isPending} onPress={() => save.mutate({ announcement: { ar: vAr, en: vEn }, autoPublish: vAuto })} style={{ marginTop: 18 }} />
+        <Text style={[styles.itemTitle, { color: colors.foreground, marginTop: 18 }]}>{t("فحص الإعلانات بالذكاء الاصطناعي")}</Text>
+        <View style={styles.actions}>{AI_MODES.map((m) => <Chip key={m.key} label={t(m.label)} active={vAi === m.key} onPress={() => setAiMode(m.key)} />)}</View>
+        <Text style={[styles.meta, { color: colors.muted }]}>{t(AI_MODES.find((m) => m.key === vAi)!.hint)}</Text>
+        <Text style={[styles.meta, { color: colors.muted }]}>{t("يحتاج مفتاح Anthropic في أسرار دوال Supabase باسم ANTHROPIC_API_KEY.")}</Text>
+        <Button label={t("حفظ الإعدادات")} loading={save.isPending} onPress={() => save.mutate({ announcement: { ar: vAr, en: vEn }, autoPublish: vAuto, aiMode: vAi })} style={{ marginTop: 18 }} />
       </Card>
     );
 }
+
+const AI_VERDICT: Record<data.AiVerdict["verdict"], string> = { ok: "سليم", review: "يحتاج مراجعة", reject: "مخالف", error: "تعذر الفحص" };
+const AI_MODES: { key: data.AiMode; label: string; hint: string }[] = [
+  { key: "off", label: "متوقف", hint: "لا يُرسل أي إعلان للفحص بالذكاء الاصطناعي." },
+  { key: "shadow", label: "مراقبة فقط", hint: "يسجّل رأيه في قائمة المراجعة دون أن يغيّر شيئًا. ابدأ بهذا لتتأكد من دقته." },
+  { key: "enforce", label: "تفعيل", hint: "الإعلان المنشور الذي يشتبه به يُنقل إلى قائمة المراجعة. لا يرفض أي إعلان بنفسه." },
+];
 
 const STATUS_TEXT: Record<data.DbStatus, string> = {
   draft: "مسودة", pending: "قيد المراجعة", active: "منشور", paused: "موقوف مؤقتًا", rejected: "مرفوض",

@@ -148,6 +148,9 @@ export function locationLabel(locations: Location[], id: number | null | undefin
 // ---------------------------------------------------------------------------
 
 /** Raw database statuses. UI labels live in components/market (statusLabel). */
+export type AiVerdict = { verdict: "ok" | "review" | "reject" | "error"; confidence: number | null; reason: string | null; categories: string[]; mode: string; applied: boolean; createdAt: string };
+export type AiMode = "off" | "shadow" | "enforce";
+
 export type DbStatus = "draft" | "pending" | "active" | "paused" | "rejected" | "sold" | "reserved" | "expired" | "archived";
 
 const LISTING_SELECT =
@@ -192,8 +195,10 @@ export type Listing = {
   images: { id: string; url: string }[];
   imageUrl: string | null;
   moderationReason: string | null;
-  /** auto_rejected / auto_review = automatic check; rejected / suspended / approved = admin. */
+  /** auto_rejected / auto_review / ai_review = automatic checks; rejected / suspended / approved = admin. */
   moderationStatus: string | null;
+  /** Latest AI review (admin lists only). */
+  ai?: AiVerdict | null;
   version: number;
 };
 
@@ -950,7 +955,17 @@ export async function adminListings(input: { status?: DbStatus | "all"; q?: stri
   if (input.q?.trim()) query = query.ilike("title", likeTerm(input.q));
   const { data, error } = await query;
   if (error) fail(error);
-  return toListings(data);
+  const items = toListings(data);
+  // Attach the latest AI verdict per listing (admins can read ai_moderation_results).
+  if (items.length) {
+    const { data: results } = await supabase.from("ai_moderation_results")
+      .select("listing_id, verdict, confidence, reason, categories, mode, applied, created_at")
+      .in("listing_id", items.map((l) => l.id)).order("created_at", { ascending: false }).limit(500);
+    const latest = new Map<string, AiVerdict>();
+    for (const r of results ?? []) if (!latest.has(r.listing_id)) latest.set(r.listing_id, { verdict: r.verdict, confidence: r.confidence === null ? null : Number(r.confidence), reason: r.reason, categories: r.categories ?? [], mode: r.mode, applied: r.applied, createdAt: r.created_at });
+    for (const l of items) l.ai = latest.get(l.id) ?? null;
+  }
+  return items;
 }
 
 export async function moderateListing(input: { id: string; action: "approve" | "reject" | "suspend" | "feature" | "unfeature"; reason?: string }) {
@@ -989,6 +1004,11 @@ export async function adminUsers(input: { q?: string }): Promise<AdminUser[]> {
 // ---------------------------------------------------------------------------
 // Account suspensions (0008): enforced by RLS; set only through audited admin functions.
 // ---------------------------------------------------------------------------
+
+/** True when the decision came from an automatic check, not an admin. */
+export function isAutomaticDecision(status: string | null | undefined) {
+  return Boolean(status && (status.startsWith("auto_") || status === "ai_review"));
+}
 
 export type Restriction = { until: string | null; reason: string };
 
@@ -1141,17 +1161,20 @@ export async function adminAuditLog(): Promise<AuditEntry[]> {
   });
 }
 
-export async function adminSettings(): Promise<{ announcement: { ar: string; en: string }; autoPublish: boolean }> {
+export async function adminSettings(): Promise<{ announcement: { ar: string; en: string }; autoPublish: boolean; aiMode: AiMode }> {
   const { data } = await supabase.from("platform_settings").select("key, value");
   const map = Object.fromEntries((data ?? []).map((r) => [r.key, r.value]));
   const ann = (map.announcement ?? {}) as { ar?: string; en?: string };
-  return { announcement: { ar: ann.ar ?? "", en: ann.en ?? "" }, autoPublish: map.listing_auto_publish !== false };
+  const ai = map.ai_moderation === "shadow" || map.ai_moderation === "enforce" ? map.ai_moderation : "off";
+  return { announcement: { ar: ann.ar ?? "", en: ann.en ?? "" }, autoPublish: map.listing_auto_publish !== false, aiMode: ai };
 }
 
-export async function adminSaveSettings(input: { announcement: { ar: string; en: string }; autoPublish: boolean }) {
+export async function adminSaveSettings(input: { announcement: { ar: string; en: string }; autoPublish: boolean; aiMode: AiMode }) {
+  const now = new Date().toISOString();
   const { error } = await supabase.from("platform_settings").upsert([
-    { key: "announcement", value: { ar: input.announcement.ar.trim().slice(0, 300), en: input.announcement.en.trim().slice(0, 300) }, updated_at: new Date().toISOString() },
-    { key: "listing_auto_publish", value: input.autoPublish, updated_at: new Date().toISOString() },
+    { key: "announcement", value: { ar: input.announcement.ar.trim().slice(0, 300), en: input.announcement.en.trim().slice(0, 300) }, updated_at: now },
+    { key: "listing_auto_publish", value: input.autoPublish, updated_at: now },
+    { key: "ai_moderation", value: input.aiMode, updated_at: now },
   ]);
   if (error) fail(error);
   return true;
